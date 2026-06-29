@@ -43,15 +43,15 @@
   .kpi-value{font-size:24px;font-weight:700;color:#fff}
   .kpi-sub{font-size:11px;color:var(--muted);margin-top:6px}
   .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;margin-bottom:24px}
-  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column}
   .chart-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}
-  .chart-wrap{position:relative;height:280px}
+  .chart-wrap{position:relative;height:300px;width:100%}
   .table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:24px}
   .table-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}
   .table-wrap{overflow-x:auto;max-height:480px;overflow-y:auto}
   table{width:100%;border-collapse:collapse;font-size:12px}
   th{background:var(--panel2);padding:10px;text-align:left;font-weight:600;color:var(--muted);text-transform:uppercase;position:sticky;top:0;z-index:5}
-  td{padding:10px;border-bottom:1px solid rgba(51,65,85,.4)}
+  td{padding:10px;border-bottom:1px solid rgba(51,65,85,.4);white-space:nowrap}
   tr:hover td{background:rgba(59,130,246,.05)}
   .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600}
   .badge.Completed{background:rgba(16,185,129,.15);color:var(--success)}
@@ -114,20 +114,22 @@ async function fetchSheet(sheetName, isRaw=false) {
     const json = JSON.parse(text.substring(47).slice(0, -2));
     const rows = json.table.rows;
     if (isRaw) {
-      return rows.map(r => r.c.map(cell => {
-        let val = cell ? cell.v : '';
-        if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
+      return rows.map(r => r.c ? r.c.map(cell => {
+        let val = cell && cell.v !== null ? cell.v : '';
+        if (val && typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
         return val;
-      }));
+      }) : []);
     }
     const cols = json.table.cols.map(c => c.label || c.id);
     return rows.map(r => {
       let obj = {};
-      r.c.forEach((cell, i) => {
-        let val = cell ? cell.v : '';
-        if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
-        obj[cols[i]] = val;
-      });
+      if (r.c) {
+        r.c.forEach((cell, i) => {
+          let val = cell && cell.v !== null ? cell.v : '';
+          if (val && typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
+          obj[cols[i]] = val;
+        });
+      }
       return obj;
     });
   } catch (e) {
@@ -136,35 +138,33 @@ async function fetchSheet(sheetName, isRaw=false) {
   }
 }
 
-// Fixes Google Sheets returning 0.6099 for 60.99%
 function parsePercent(val) {
   let num = parseFloat(val);
   if (isNaN(num)) return 0;
   if (typeof val === 'string' && val.includes('%')) return num;
-  if (Math.abs(num) <= 2) return num * 100;
+  if (Math.abs(num) <= 2) return num * 100; // Convert decimal to percentage
   return num;
 }
 
-// Special Parser for MOH Multi-Block Structure
 function processMOH(rawRows) {
   let sbu = '';
   let transactions = [];
   let headers = [];
   rawRows.forEach(row => {
-    if (row.length < 2) return;
+    if (!row || row.length < 2) return;
     let firstCol = String(row[0] || '').trim();
     if (firstCol.includes('SBU DATASTREAMS:')) {
       sbu = firstCol.split(':')[1].trim();
       headers = []; 
     } else if (firstCol === 'Sl' || String(row[1]||'').trim() === 'Sl') {
-      headers = row.map(c => String(c).trim());
-    } else if (sbu && headers.length > 0 && firstCol && firstCol !== '0' && firstCol !== 'Sl') {
+      headers = row.map(c => String(c||'').trim());
+    } else if (sbu && headers.length > 0 && firstCol && firstCol !== '0') {
       let obj = { sbu };
       row.forEach((val, i) => {
         let h = headers[i] || `col_${i}`;
         obj[h] = val;
       });
-      if (obj['Transaction Name'] || obj['Sl'] || obj['col_1']) {
+      if (obj['Transaction Name'] || (obj['Sl'] && !isNaN(parseFloat(obj['Sl'])))) {
         transactions.push(obj);
       }
     }
@@ -223,7 +223,7 @@ function getFiltersHTML(sectionId, data, filterKeys) {
     html += `
       <div class="filter-group">
         <label>${key}</label>
-        <select id="${sectionId}_filter_${key}" onchange="renderSection('${sectionId}', document.getElementById('pageTitle').innerText, document.getElementById('pageSubtitle').innerText, event)">
+        <select id="${sectionId}_filter_${key}" onchange="update${sectionId.toUpperCase()}()">
           <option value="">All</option>
           ${values.map(v => `<option value="${v}">${v}</option>`).join('')}
         </select>
@@ -249,9 +249,13 @@ function getFilteredData(sectionId, data, filterKeys) {
 function renderOEE(container) {
   const filterKeys = ['SBU', 'Month', 'Section'];
   container.innerHTML = getFiltersHTML('oee', allData.oee, filterKeys) + `<div id="oeeContent"></div>`;
+  updateOEE();
+}
+
+function updateOEE() {
+  const filterKeys = ['SBU', 'Month', 'Section'];
   const data = getFilteredData('oee', allData.oee, filterKeys);
   const content = document.getElementById('oeeContent');
-  
   if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   const avg = (key) => data.reduce((s, r) => s + (parseFloat(r[key]) || 0), 0) / data.length;
@@ -287,12 +291,12 @@ function renderOEE(container) {
   new Chart(document.getElementById('oeeTargetChart'), {
     type: 'bar',
     data: { labels: ['Actual OEE', 'Target'], datasets: [{ data: [oee.toFixed(2), 85], backgroundColor: ['#3b82f6', '#10b981'], barThickness: 40 }] },
-    options: { scales: { y: { beginAtZero: true, max: 100 } }, plugins: { legend: { display: false } } }
+    options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true, max: 100 } }, plugins: { legend: { display: false } } }
   });
   new Chart(document.getElementById('apqChart'), {
     type: 'radar',
     data: { labels: ['Availability', 'Performance', 'Quality'], datasets: [{ label: 'Avg %', data: [avg('AV'), avg('Perf'), avg('Quality')], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.2)' }] },
-    options: { scales: { r: { beginAtZero: true, max: 100 } } }
+    options: { responsive: true, maintainAspectRatio: false, scales: { r: { beginAtZero: true, max: 100 } } }
   });
 
   let html = `<thead><tr><th>SBU</th><th>Section</th><th>Month</th><th>OEE</th><th>NPT</th><th>MTTR</th><th>MTBF</th><th>Target</th><th>Actual</th></tr></thead><tbody>`;
@@ -306,9 +310,13 @@ function renderOEE(container) {
 function renderRACI(container) {
   const filterKeys = ['SBU'];
   container.innerHTML = getFiltersHTML('raci', allData.raci, filterKeys) + `<div id="raciContent"></div>`;
+  updateRACI();
+}
+
+function updateRACI() {
+  const filterKeys = ['SBU'];
   const data = getFilteredData('raci', allData.raci, filterKeys);
   const content = document.getElementById('raciContent');
-  
   if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let totalPlanned = data.reduce((s,r)=>s+parseFloat(r['Sum of Planned Value (BDT)']||0),0);
@@ -343,9 +351,13 @@ function renderRACI(container) {
 function renderIC(container) {
   const filterKeys = ['SBU', 'Month', 'Section'];
   container.innerHTML = getFiltersHTML('ic', allData.ic, filterKeys) + `<div id="icContent"></div>`;
+  updateIC();
+}
+
+function updateIC() {
+  const filterKeys = ['SBU', 'Month', 'Section'];
   const data = getFilteredData('ic', allData.ic, filterKeys);
   const content = document.getElementById('icContent');
-  
   if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let completed = data.filter(r=>r.Status==='Completed').length;
@@ -375,7 +387,8 @@ function renderIC(container) {
 
   new Chart(document.getElementById('icChart'), {
     type: 'doughnut',
-    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] }
+    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] },
+    options: { responsive: true, maintainAspectRatio: false }
   });
 
   let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Date</th><th>Status</th></tr></thead><tbody>`;
@@ -389,9 +402,13 @@ function renderIC(container) {
 function renderPC(container) {
   const filterKeys = ['SBU', 'Created Month', 'Section'];
   container.innerHTML = getFiltersHTML('pc', allData.pc, filterKeys) + `<div id="pcContent"></div>`;
+  updatePC();
+}
+
+function updatePC() {
+  const filterKeys = ['SBU', 'Created Month', 'Section'];
   const data = getFilteredData('pc', allData.pc, filterKeys);
   const content = document.getElementById('pcContent');
-  
   if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let completed = data.filter(r=>r.Status==='Completed').length;
@@ -421,7 +438,8 @@ function renderPC(container) {
 
   new Chart(document.getElementById('pcChart'), {
     type: 'doughnut',
-    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] }
+    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] },
+    options: { responsive: true, maintainAspectRatio: false }
   });
 
   let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Month</th><th>Status</th></tr></thead><tbody>`;
@@ -435,9 +453,13 @@ function renderPC(container) {
 function renderMOH(container) {
   const filterKeys = ['sbu'];
   container.innerHTML = getFiltersHTML('moh', allData.moh, filterKeys) + `<div id="mohContent"></div>`;
+  updateMOH();
+}
+
+function updateMOH() {
+  const filterKeys = ['sbu'];
   const data = getFilteredData('moh', allData.moh, filterKeys);
   const content = document.getElementById('mohContent');
-  
   if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let sbus = [...new Set(data.map(r=>r.sbu))];
