@@ -43,7 +43,7 @@
   .kpi-value{font-size:24px;font-weight:700;color:#fff}
   .kpi-sub{font-size:11px;color:var(--muted);margin-top:6px}
   .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;margin-bottom:24px}
-  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column}
+  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;display:flex;flex-direction:column;overflow:hidden}
   .chart-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}
   .chart-wrap{position:relative;height:300px;width:100%}
   .table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:24px}
@@ -106,32 +106,18 @@ const SHEET_ID = '17xgLNSWgPaPa-WR6MpPa5dcvQUoUaQKqlT6OyVCoJ4U';
 let allData = { oee: [], raci: [], ic: [], pc: [], moh: [] };
 let currentSection = 'oee';
 
-async function fetchSheet(sheetName, isRaw=false) {
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
+// Safely fetch raw 2D array from Google Sheets
+async function fetchRaw(sheetName) {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&headers=0`;
   try {
     const res = await fetch(url);
     const text = await res.text();
-    const json = JSON.parse(text.substring(47).slice(0, -2));
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1 || end === -1) return [];
+    const json = JSON.parse(text.substring(start, end + 1));
     const rows = json.table.rows;
-    if (isRaw) {
-      return rows.map(r => r.c ? r.c.map(cell => {
-        let val = cell && cell.v !== null ? cell.v : '';
-        if (val && typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
-        return val;
-      }) : []);
-    }
-    const cols = json.table.cols.map(c => c.label || c.id);
-    return rows.map(r => {
-      let obj = {};
-      if (r.c) {
-        r.c.forEach((cell, i) => {
-          let val = cell && cell.v !== null ? cell.v : '';
-          if (val && typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
-          obj[cols[i]] = val;
-        });
-      }
-      return obj;
-    });
+    return rows.map(r => r.c ? r.c.map(cell => cell && cell.v !== null ? cell.v : '') : []);
   } catch (e) {
     console.error(`Error fetching ${sheetName}:`, e);
     return [];
@@ -139,6 +125,7 @@ async function fetchSheet(sheetName, isRaw=false) {
 }
 
 function parsePercent(val) {
+  if (val === null || val === undefined || val === '') return 0;
   let num = parseFloat(val);
   if (isNaN(num)) return 0;
   if (typeof val === 'string' && val.includes('%')) return num;
@@ -146,6 +133,46 @@ function parsePercent(val) {
   return num;
 }
 
+// Find the actual header row dynamically
+function getHeaderIndex(rawRows, keywords) {
+  for (let i = 0; i < rawRows.length; i++) {
+    if (!rawRows[i]) continue;
+    const rowStr = rawRows[i].join(' ').toLowerCase();
+    if (keywords.every(k => rowStr.includes(k.toLowerCase()))) {
+      return i;
+    }
+  }
+  return 0; // fallback to first row
+}
+
+// Process generic sheets into JSON objects
+function processSheet(rawRows, headerRowIndex) {
+  if (!rawRows[headerRowIndex]) return [];
+  let seen = {};
+  const cols = rawRows[headerRowIndex].map(c => {
+    let h = String(c || '').trim();
+    if (seen[h]) { seen[h]++; h = `${h}_${seen[h]}`; } else { seen[h] = 0; }
+    return h;
+  });
+
+  const data = [];
+  for (let i = headerRowIndex + 1; i < rawRows.length; i++) {
+    const r = rawRows[i];
+    if (!r || r.length === 0) continue;
+    let obj = {};
+    let hasData = false;
+    r.forEach((val, i) => {
+      let cleanVal = val;
+      if (typeof cleanVal === 'string' && (cleanVal.includes('*') || cleanVal.includes('#DIV') || cleanVal.includes('#REF'))) cleanVal = 0;
+      obj[cols[i] || `col_${i}`] = cleanVal;
+      if (cleanVal !== '' && cleanVal !== null && cleanVal !== undefined) hasData = true;
+    });
+    if (hasData) data.push(obj);
+  }
+  return data;
+}
+
+// Special Parser for MOH Multi-Block Structure
 function processMOH(rawRows) {
   let sbu = '';
   let transactions = [];
@@ -156,15 +183,24 @@ function processMOH(rawRows) {
     if (firstCol.includes('SBU DATASTREAMS:')) {
       sbu = firstCol.split(':')[1].trim();
       headers = []; 
-    } else if (firstCol === 'Sl' || String(row[1]||'').trim() === 'Sl') {
-      headers = row.map(c => String(c||'').trim());
+    } else if (firstCol === 'Sl' || String(row[1] || '').trim() === 'Sl') {
+      headers = [];
+      let seen = {};
+      row.forEach(c => {
+        let h = String(c || '').trim();
+        if (seen[h]) { seen[h]++; h = `${h}_${seen[h]}`; } else { seen[h] = 0; }
+        headers.push(h);
+      });
     } else if (sbu && headers.length > 0 && firstCol && firstCol !== '0') {
       let obj = { sbu };
+      let hasData = false;
       row.forEach((val, i) => {
         let h = headers[i] || `col_${i}`;
+        if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
         obj[h] = val;
+        if (val !== '' && val !== null && val !== undefined) hasData = true;
       });
-      if (obj['Transaction Name'] || (obj['Sl'] && !isNaN(parseFloat(obj['Sl'])))) {
+      if (hasData && (obj['Transaction Name'] || (obj['Sl'] && !isNaN(parseFloat(obj['Sl']))))) {
         transactions.push(obj);
       }
     }
@@ -174,25 +210,39 @@ function processMOH(rawRows) {
 
 async function init() {
   document.getElementById('syncStatus').innerText = 'Fetching Data...';
-  const [oee, raci, ic, pc, mohRaw] = await Promise.all([
-    fetchSheet('SBU Wise OEE'),
-    fetchSheet('RACI Import'),
-    fetchSheet('IC'),
-    fetchSheet('PC'),
-    fetchSheet('MOH COST', true) 
+  
+  const [oeeRaw, raciRaw, icRaw, pcRaw, mohRaw] = await Promise.all([
+    fetchRaw('SBU Wise OEE'),
+    fetchRaw('RACI Import'),
+    fetchRaw('IC'),
+    fetchRaw('PC'),
+    fetchRaw('MOH COST')
   ]);
   
-  allData.oee = oee.filter(r => r.SBU).map(r => ({
+  // Process OEE
+  const oeeH = getHeaderIndex(oeeRaw, ['SBU', 'Section', 'Month']);
+  allData.oee = processSheet(oeeRaw, oeeH).map(r => ({
     ...r,
     OEE: parsePercent(r.OEE),
     'NPT %': parsePercent(r['NPT %']),
     AV: parsePercent(r.AV),
     Perf: parsePercent(r.Perf),
     Quality: parsePercent(r.Quality)
-  }));
-  allData.raci = raci.filter(r => r['Project Name']);
-  allData.ic = ic.filter(r => r.SBU && r['Card No.']);
-  allData.pc = pc.filter(r => r.SBU && r['Card No']);
+  })).filter(r => r.SBU && r.SBU !== 'SBU');
+
+  // Process RACI (Skips Title Row automatically)
+  const raciH = getHeaderIndex(raciRaw, ['Sl. No', 'Project Name']);
+  allData.raci = processSheet(raciRaw, raciH).filter(r => r['Project Name']);
+
+  // Process IC
+  const icH = getHeaderIndex(icRaw, ['Card No.', 'Section']);
+  allData.ic = processSheet(icRaw, icH).filter(r => r.SBU && r['Card No.']);
+
+  // Process PC
+  const pcH = getHeaderIndex(pcRaw, ['Card No', 'Created Month']);
+  allData.pc = processSheet(pcRaw, pcH).filter(r => r.SBU && r['Card No']);
+
+  // Process MOH
   allData.moh = processMOH(mohRaw);
   
   document.getElementById('syncStatus').innerText = 'Live Synced';
@@ -219,7 +269,7 @@ function renderSection(sec, title, sub, ev) {
 function getFiltersHTML(sectionId, data, filterKeys) {
   let html = '<div class="section-filters">';
   filterKeys.forEach(key => {
-    let values = [...new Set(data.map(r => r[key]).filter(v => v !== undefined && v !== ''))].sort();
+    let values = [...new Set(data.map(r => r[key]).filter(v => v !== undefined && v !== '' && v !== null))].sort();
     html += `
       <div class="filter-group">
         <label>${key}</label>
