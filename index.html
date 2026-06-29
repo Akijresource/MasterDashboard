@@ -24,10 +24,10 @@
   .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:16px}
   .topbar h2{font-size:22px;font-weight:700;color:#fff}
   .topbar .subtitle{font-size:13px;color:var(--muted)}
-  .filters{display:flex;gap:12px;flex-wrap:wrap}
+  .section-filters{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px;margin-bottom:24px;display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end}
   .filter-group{display:flex;flex-direction:column;gap:4px}
   .filter-group label{font-size:11px;color:var(--muted);text-transform:uppercase}
-  select{background:var(--panel);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;min-width:140px}
+  select{background:var(--bg);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;min-width:140px}
   .section{display:none;animation:fade .3s ease}
   .section.active{display:block}
   @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
@@ -80,16 +80,14 @@
 
 <div class="sidebar">
   <div class="logo"><h1>DCOO Dashboard</h1><p>Live Google Sheet Sync</p></div>
-  <div class="nav-item active" onclick="showSection('oee', 'SBU Wise OEE', 'Overall Equipment Effectiveness')"><span class="dot"></span>SBU Wise OEE</div>
-  <div class="nav-item" onclick="showSection('raci', 'RACI Import', 'Project Tracking & SPI')"><span class="dot"></span>RACI Import</div>
-  <div class="nav-item" onclick="showSection('ic', 'Innovation Cards', 'IC Status & Flow')"><span class="dot"></span>IC Cards</div>
-  <div class="nav-item" onclick="showSection('pc', 'Project Cards', 'PC Status & Flow')"><span class="dot"></span>PC Cards</div>
-  <div class="nav-item" onclick="showSection('moh', 'MOH Cost', 'Manufacturing Overheads')"><span class="dot"></span>MOH Cost</div>
-  <div class="nav-item" onclick="showSection('breakdown', 'Breakdown Analysis', 'Embedded Dashboard')"><span class="dot"></span>Breakdown Analysis</div>
+  <div class="nav-item active" onclick="renderSection('oee', 'SBU Wise OEE', 'Overall Equipment Effectiveness', event)"><span class="dot"></span>SBU Wise OEE</div>
+  <div class="nav-item" onclick="renderSection('raci', 'RACI Import', 'Project Tracking & SPI', event)"><span class="dot"></span>RACI Import</div>
+  <div class="nav-item" onclick="renderSection('ic', 'Innovation Cards', 'IC Status & Flow', event)"><span class="dot"></span>IC Cards</div>
+  <div class="nav-item" onclick="renderSection('pc', 'Project Cards', 'PC Status & Flow', event)"><span class="dot"></span>PC Cards</div>
+  <div class="nav-item" onclick="renderSection('moh', 'MOH Cost', 'Manufacturing Overheads', event)"><span class="dot"></span>MOH Cost</div>
+  <div class="nav-item" onclick="renderSection('breakdown', 'Breakdown Analysis', 'Embedded Dashboard', event)"><span class="dot"></span>Breakdown Analysis</div>
   <div style="padding:24px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);margin-top:24px">
-    <p>Sheet ID:</p>
-    <p style="color:var(--primary);word-break:break-all;margin-top:4px;font-size:10px">17xgLNSWgPaPa...</p>
-    <p style="margin-top:12px">Status: <span id="syncStatus" style="color:var(--success)">Connecting...</span></p>
+    <p>Status: <span id="syncStatus" style="color:var(--success)">Connecting...</span></p>
   </div>
 </div>
 
@@ -99,38 +97,34 @@
       <h2 id="pageTitle">SBU Wise OEE</h2>
       <p class="subtitle" id="pageSubtitle">Overall Equipment Effectiveness</p>
     </div>
-    <div class="filters">
-      <div class="filter-group"><label>SBU</label><select id="filterSBU" onchange="applyFilters()"><option value="">All</option></select></div>
-      <div class="filter-group"><label>Month</label><select id="filterMonth" onchange="applyFilters()"><option value="">All</option></select></div>
-      <div class="filter-group"><label>Section</label><select id="filterSection" onchange="applyFilters()"><option value="">All</option></select></div>
-    </div>
   </div>
-
   <div id="dynamicContent"><div class="loader"></div></div>
 </div>
 
 <script>
-// ===== CONFIG =====
 const SHEET_ID = '17xgLNSWgPaPa-WR6MpPa5dcvQUoUaQKqlT6OyVCoJ4U';
 let allData = { oee: [], raci: [], ic: [], pc: [], moh: [] };
 let currentSection = 'oee';
 
-// ===== GOOGLE SHEET FETCH ENGINE =====
-async function fetchSheet(sheetName) {
-  const query = encodeURIComponent('SELECT *');
-  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&tq=${query}`;
+async function fetchSheet(sheetName, isRaw=false) {
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}`;
   try {
     const res = await fetch(url);
     const text = await res.text();
     const json = JSON.parse(text.substring(47).slice(0, -2));
     const rows = json.table.rows;
+    if (isRaw) {
+      return rows.map(r => r.c.map(cell => {
+        let val = cell ? cell.v : '';
+        if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
+        return val;
+      }));
+    }
     const cols = json.table.cols.map(c => c.label || c.id);
-    
     return rows.map(r => {
       let obj = {};
       r.c.forEach((cell, i) => {
         let val = cell ? cell.v : '';
-        // Clean asterisks and errors
         if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
         obj[cols[i]] = val;
       });
@@ -142,92 +136,123 @@ async function fetchSheet(sheetName) {
   }
 }
 
-// ===== INIT =====
+// Fixes Google Sheets returning 0.6099 for 60.99%
+function parsePercent(val) {
+  let num = parseFloat(val);
+  if (isNaN(num)) return 0;
+  if (typeof val === 'string' && val.includes('%')) return num;
+  if (Math.abs(num) <= 2) return num * 100;
+  return num;
+}
+
+// Special Parser for MOH Multi-Block Structure
+function processMOH(rawRows) {
+  let sbu = '';
+  let transactions = [];
+  let headers = [];
+  rawRows.forEach(row => {
+    if (row.length < 2) return;
+    let firstCol = String(row[0] || '').trim();
+    if (firstCol.includes('SBU DATASTREAMS:')) {
+      sbu = firstCol.split(':')[1].trim();
+      headers = []; 
+    } else if (firstCol === 'Sl' || String(row[1]||'').trim() === 'Sl') {
+      headers = row.map(c => String(c).trim());
+    } else if (sbu && headers.length > 0 && firstCol && firstCol !== '0' && firstCol !== 'Sl') {
+      let obj = { sbu };
+      row.forEach((val, i) => {
+        let h = headers[i] || `col_${i}`;
+        obj[h] = val;
+      });
+      if (obj['Transaction Name'] || obj['Sl'] || obj['col_1']) {
+        transactions.push(obj);
+      }
+    }
+  });
+  return transactions;
+}
+
 async function init() {
   document.getElementById('syncStatus').innerText = 'Fetching Data...';
-  // Fetch all sheets simultaneously
-  const [oee, raci, ic, pc, moh] = await Promise.all([
+  const [oee, raci, ic, pc, mohRaw] = await Promise.all([
     fetchSheet('SBU Wise OEE'),
     fetchSheet('RACI Import'),
     fetchSheet('IC'),
     fetchSheet('PC'),
-    fetchSheet('MOH COST')
+    fetchSheet('MOH COST', true) 
   ]);
   
-  allData.oee = oee.filter(r => r.SBU);
+  allData.oee = oee.filter(r => r.SBU).map(r => ({
+    ...r,
+    OEE: parsePercent(r.OEE),
+    'NPT %': parsePercent(r['NPT %']),
+    AV: parsePercent(r.AV),
+    Perf: parsePercent(r.Perf),
+    Quality: parsePercent(r.Quality)
+  }));
   allData.raci = raci.filter(r => r['Project Name']);
   allData.ic = ic.filter(r => r.SBU && r['Card No.']);
   allData.pc = pc.filter(r => r.SBU && r['Card No']);
-  allData.moh = moh.filter(r => r['Transaction Name']); // Basic filter
+  allData.moh = processMOH(mohRaw);
   
   document.getElementById('syncStatus').innerText = 'Live Synced';
-  populateFilters();
-  applyFilters();
+  renderSection('oee', 'SBU Wise OEE', 'Overall Equipment Effectiveness');
 }
 
-// ===== NAVIGATION =====
-function showSection(sec, title, sub) {
+function renderSection(sec, title, sub, ev) {
   currentSection = sec;
   document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
-  event.target.closest('.nav-item').classList.add('active');
-  document.getElementById('pageTitle').innerText = title;
-  document.getElementById('pageSubtitle').innerText = sub;
-  applyFilters();
-}
-
-// ===== FILTERS =====
-function populateFilters() {
-  let sbus = new Set(), months = new Set(), sections = new Set();
-  allData.oee.forEach(r => { sbus.add(r.SBU); months.add(r.Month); sections.add(r.Section); });
-  allData.ic.forEach(r => { sbus.add(r.SBU); months.add(r.Month); sections.add(r.Section); });
-  allData.pc.forEach(r => { sbus.add(r.SBU); months.add(r['Created Month']); sections.add(r.Section); });
-
-  fillSelect('filterSBU', sbus);
-  fillSelect('filterMonth', months);
-  fillSelect('filterSection', sections);
-}
-
-function fillSelect(id, set) {
-  const sel = document.getElementById(id);
-  const currentVal = sel.value;
-  sel.innerHTML = '<option value="">All</option>';
-  [...set].filter(Boolean).sort().forEach(v => {
-    const opt = document.createElement('option');
-    opt.value = v; opt.innerText = v;
-    sel.appendChild(opt);
-  });
-  sel.value = currentVal;
-}
-
-function getFilteredData(type) {
-  const sbu = document.getElementById('filterSBU').value;
-  const month = document.getElementById('filterMonth').value;
-  const section = document.getElementById('filterSection').value;
-  return allData[type].filter(r => {
-    let rSbu = r.SBU || r['SBU DATASTREAMS: ACCL'] || '';
-    let rMonth = r.Month || r['Created Month'] || '';
-    let rSection = r.Section || '';
-    return (!sbu || rSbu === sbu) && (!month || rMonth === month) && (!section || rSection === section);
-  });
-}
-
-// ===== RENDER ENGINE =====
-function applyFilters() {
+  if (ev && ev.target) ev.target.closest('.nav-item').classList.add('active');
+  document.getElementById('pageTitle').innerText = title || sec;
+  document.getElementById('pageSubtitle').innerText = sub || '';
   const content = document.getElementById('dynamicContent');
   content.innerHTML = '';
-
-  if (currentSection === 'oee') renderOEE(content);
-  else if (currentSection === 'raci') renderRACI(content);
-  else if (currentSection === 'ic') renderIC(content);
-  else if (currentSection === 'pc') renderPC(content);
-  else if (currentSection === 'moh') renderMOH(content);
-  else if (currentSection === 'breakdown') renderBreakdown(content);
+  
+  if (sec === 'oee') renderOEE(content);
+  else if (sec === 'raci') renderRACI(content);
+  else if (sec === 'ic') renderIC(content);
+  else if (sec === 'pc') renderPC(content);
+  else if (sec === 'moh') renderMOH(content);
+  else if (sec === 'breakdown') renderBreakdown(content);
 }
 
-// ===== OEE SECTION =====
+function getFiltersHTML(sectionId, data, filterKeys) {
+  let html = '<div class="section-filters">';
+  filterKeys.forEach(key => {
+    let values = [...new Set(data.map(r => r[key]).filter(v => v !== undefined && v !== ''))].sort();
+    html += `
+      <div class="filter-group">
+        <label>${key}</label>
+        <select id="${sectionId}_filter_${key}" onchange="renderSection('${sectionId}', document.getElementById('pageTitle').innerText, document.getElementById('pageSubtitle').innerText, event)">
+          <option value="">All</option>
+          ${values.map(v => `<option value="${v}">${v}</option>`).join('')}
+        </select>
+      </div>
+    `;
+  });
+  html += '</div>';
+  return html;
+}
+
+function getFilteredData(sectionId, data, filterKeys) {
+  return data.filter(r => {
+    return filterKeys.every(key => {
+      let sel = document.getElementById(`${sectionId}_filter_${key}`);
+      if (!sel) return true;
+      let val = sel.value;
+      return !val || r[key] == val;
+    });
+  });
+}
+
+// --- OEE SECTION ---
 function renderOEE(container) {
-  const data = getFilteredData('oee');
-  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+  const filterKeys = ['SBU', 'Month', 'Section'];
+  container.innerHTML = getFiltersHTML('oee', allData.oee, filterKeys) + `<div id="oeeContent"></div>`;
+  const data = getFilteredData('oee', allData.oee, filterKeys);
+  const content = document.getElementById('oeeContent');
+  
+  if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   const avg = (key) => data.reduce((s, r) => s + (parseFloat(r[key]) || 0), 0) / data.length;
   let oee = avg('OEE'), npt = avg('NPT %'), mttr = avg('MTTR'), mtbf = avg('MTBF');
@@ -235,7 +260,7 @@ function renderOEE(container) {
   let target = data.reduce((s, r) => s + (parseFloat(r['Target']) || 0), 0);
   let actual = data.reduce((s, r) => s + (parseFloat(r['Actual Output']) || 0), 0);
 
-  container.innerHTML = `
+  content.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi-card ${oee>=85?'success':'danger'}"><div class="kpi-label">Overall OEE</div><div class="kpi-value">${oee.toFixed(2)}%</div><div class="kpi-sub">Target: 85%</div></div>
       <div class="kpi-card warning"><div class="kpi-label">Avg NPT</div><div class="kpi-value">${npt.toFixed(2)}%</div></div>
@@ -244,12 +269,10 @@ function renderOEE(container) {
       <div class="kpi-card success"><div class="kpi-label">Total Shift Cap</div><div class="kpi-value">${shiftCap.toLocaleString()}</div></div>
       <div class="kpi-card danger"><div class="kpi-label">Target vs Actual</div><div class="kpi-value">${actual.toLocaleString()}</div><div class="kpi-sub">Target: ${target.toLocaleString()}</div></div>
     </div>
-    
     <div class="chart-grid">
       <div class="chart-card"><div class="chart-title">OEE vs Target (85%)</div><div class="chart-wrap"><canvas id="oeeTargetChart"></canvas></div></div>
       <div class="chart-card"><div class="chart-title">Availability / Performance / Quality</div><div class="chart-wrap"><canvas id="apqChart"></canvas></div></div>
     </div>
-
     <div class="ai-card">
       <div class="ai-header"><div class="ai-icon">🤖</div><h3>AI Analysis & Suggestions</h3></div>
       <div class="ai-insights">
@@ -258,44 +281,41 @@ function renderOEE(container) {
         <div class="insight-item warning"><strong>Target vs Actual</strong> Total output is ${(actual/target*100).toFixed(2)}% of the target. ${actual<target?'Consider increasing shift capacity utilization or reducing speed losses.':'Output is exceeding targets.'}</div>
       </div>
     </div>
-
-    <div class="table-card">
-      <div class="table-title">Detailed OEE Records</div>
-      <div class="table-wrap"><table id="oeeTable"></table></div>
-    </div>
+    <div class="table-card"><div class="table-title">Detailed OEE Records</div><div class="table-wrap"><table id="oeeTable"></table></div></div>
   `;
 
-  // Charts
   new Chart(document.getElementById('oeeTargetChart'), {
     type: 'bar',
     data: { labels: ['Actual OEE', 'Target'], datasets: [{ data: [oee.toFixed(2), 85], backgroundColor: ['#3b82f6', '#10b981'], barThickness: 40 }] },
     options: { scales: { y: { beginAtZero: true, max: 100 } }, plugins: { legend: { display: false } } }
   });
-
   new Chart(document.getElementById('apqChart'), {
     type: 'radar',
     data: { labels: ['Availability', 'Performance', 'Quality'], datasets: [{ label: 'Avg %', data: [avg('AV'), avg('Perf'), avg('Quality')], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.2)' }] },
     options: { scales: { r: { beginAtZero: true, max: 100 } } }
   });
 
-  // Table
   let html = `<thead><tr><th>SBU</th><th>Section</th><th>Month</th><th>OEE</th><th>NPT</th><th>MTTR</th><th>MTBF</th><th>Target</th><th>Actual</th></tr></thead><tbody>`;
   data.forEach(r => {
-    html += `<tr><td>${r.SBU}</td><td>${r.Section}</td><td>${r.Month}</td><td>${r.OEE}</td><td>${r['NPT %']}</td><td>${r.MTTR}</td><td>${r.MTBF}</td><td>${r.Target}</td><td>${r['Actual Output']}</td></tr>`;
+    html += `<tr><td>${r.SBU}</td><td>${r.Section}</td><td>${r.Month}</td><td>${parseFloat(r.OEE).toFixed(2)}%</td><td>${parseFloat(r['NPT %']).toFixed(2)}%</td><td>${r.MTTR}</td><td>${r.MTBF}</td><td>${r.Target}</td><td>${r['Actual Output']}</td></tr>`;
   });
   document.getElementById('oeeTable').innerHTML = html + '</tbody>';
 }
 
-// ===== RACI SECTION =====
+// --- RACI SECTION ---
 function renderRACI(container) {
-  const data = getFilteredData('raci');
-  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+  const filterKeys = ['SBU'];
+  container.innerHTML = getFiltersHTML('raci', allData.raci, filterKeys) + `<div id="raciContent"></div>`;
+  const data = getFilteredData('raci', allData.raci, filterKeys);
+  const content = document.getElementById('raciContent');
+  
+  if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let totalPlanned = data.reduce((s,r)=>s+parseFloat(r['Sum of Planned Value (BDT)']||0),0);
   let totalEarned = data.reduce((s,r)=>s+parseFloat(r['Sum of Earned Value (BDT)']||0),0);
   let avgSpi = data.reduce((s,r)=>s+parseFloat(r['SPI']||0),0)/data.length;
 
-  container.innerHTML = `
+  content.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi-card info"><div class="kpi-label">Active Projects</div><div class="kpi-value">${data.length}</div></div>
       <div class="kpi-card ${avgSpi>=1?'success':'warning'}"><div class="kpi-label">Avg SPI</div><div class="kpi-value">${avgSpi.toFixed(2)}</div><div class="kpi-sub">${avgSpi>=1?'On Track':'Needs Attention'}</div></div>
@@ -319,17 +339,21 @@ function renderRACI(container) {
   document.getElementById('raciTable').innerHTML = html + '</tbody>';
 }
 
-// ===== IC SECTION =====
+// --- IC SECTION ---
 function renderIC(container) {
-  const data = getFilteredData('ic');
-  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+  const filterKeys = ['SBU', 'Month', 'Section'];
+  container.innerHTML = getFiltersHTML('ic', allData.ic, filterKeys) + `<div id="icContent"></div>`;
+  const data = getFilteredData('ic', allData.ic, filterKeys);
+  const content = document.getElementById('icContent');
+  
+  if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let completed = data.filter(r=>r.Status==='Completed').length;
   let rejected = data.filter(r=>r.Status==='Rejected').length;
   let ongoing = data.filter(r=>r.Status==='Ongoing').length;
   let initiated = data.filter(r=>r.Status==='Initiated').length;
 
-  container.innerHTML = `
+  content.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi-card info"><div class="kpi-label">Total IC Cards</div><div class="kpi-value">${data.length}</div></div>
       <div class="kpi-card success"><div class="kpi-label">Completed</div><div class="kpi-value">${completed}</div></div>
@@ -346,7 +370,7 @@ function renderIC(container) {
         <div class="insight-item ${rejected>completed?'danger':'success'}"><strong>Completion Rate</strong> ${completed} cards completed vs ${rejected} rejected. ${rejected>completed?'Rejection rate is high. Review quality of initiation.':'Good completion rate.'}</div>
       </div>
     </div>
-    <div class="table-card"><div class="table-title">Latest IC Cards</div><div class="table-wrap"><table id="icTable"></table></div></div>
+    <div class="table-card"><div class="table-title">All IC Cards</div><div class="table-wrap"><table id="icTable"></table></div></div>
   `;
 
   new Chart(document.getElementById('icChart'), {
@@ -355,23 +379,27 @@ function renderIC(container) {
   });
 
   let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Date</th><th>Status</th></tr></thead><tbody>`;
-  data.slice(-20).reverse().forEach(r => {
+  data.forEach(r => {
     html += `<tr><td>${r.SBU}</td><td>${r['Card No.']}</td><td>${r.Section}</td><td>${r['Created Date']}</td><td><span class="badge ${r.Status}">${r.Status}</span></td></tr>`;
   });
   document.getElementById('icTable').innerHTML = html + '</tbody>';
 }
 
-// ===== PC SECTION =====
+// --- PC SECTION ---
 function renderPC(container) {
-  const data = getFilteredData('pc');
-  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+  const filterKeys = ['SBU', 'Created Month', 'Section'];
+  container.innerHTML = getFiltersHTML('pc', allData.pc, filterKeys) + `<div id="pcContent"></div>`;
+  const data = getFilteredData('pc', allData.pc, filterKeys);
+  const content = document.getElementById('pcContent');
+  
+  if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
 
   let completed = data.filter(r=>r.Status==='Completed').length;
   let rejected = data.filter(r=>r.Status==='Rejected').length;
   let ongoing = data.filter(r=>r.Status==='Ongoing').length;
   let initiated = data.filter(r=>r.Status==='Initiated').length;
 
-  container.innerHTML = `
+  content.innerHTML = `
     <div class="kpi-grid">
       <div class="kpi-card info"><div class="kpi-label">Total PC Cards</div><div class="kpi-value">${data.length}</div></div>
       <div class="kpi-card success"><div class="kpi-label">Completed</div><div class="kpi-value">${completed}</div></div>
@@ -388,7 +416,7 @@ function renderPC(container) {
         <div class="insight-item ${rejected>completed?'danger':'success'}"><strong>Completion Rate</strong> ${completed} cards completed vs ${rejected} rejected. ${rejected>completed?'Rejection rate is high. Review quality of initiation.':'Good completion rate.'}</div>
       </div>
     </div>
-    <div class="table-card"><div class="table-title">Latest PC Cards</div><div class="table-wrap"><table id="pcTable"></table></div></div>
+    <div class="table-card"><div class="table-title">All PC Cards</div><div class="table-wrap"><table id="pcTable"></table></div></div>
   `;
 
   new Chart(document.getElementById('pcChart'), {
@@ -397,35 +425,51 @@ function renderPC(container) {
   });
 
   let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Month</th><th>Status</th></tr></thead><tbody>`;
-  data.slice(-20).reverse().forEach(r => {
+  data.forEach(r => {
     html += `<tr><td>${r.SBU}</td><td>${r['Card No']}</td><td>${r.Section}</td><td>${r['Created Month']}</td><td><span class="badge ${r.Status}">${r.Status || 'N/A'}</span></td></tr>`;
   });
   document.getElementById('pcTable').innerHTML = html + '</tbody>';
 }
 
-// ===== MOH SECTION =====
+// --- MOH SECTION ---
 function renderMOH(container) {
-  const data = allData.moh; // MOH is complex, showing raw for now
-  container.innerHTML = `
+  const filterKeys = ['sbu'];
+  container.innerHTML = getFiltersHTML('moh', allData.moh, filterKeys) + `<div id="mohContent"></div>`;
+  const data = getFilteredData('moh', allData.moh, filterKeys);
+  const content = document.getElementById('mohContent');
+  
+  if (data.length === 0) return content.innerHTML = '<p style="color:#fff">No data</p>';
+
+  let sbus = [...new Set(data.map(r=>r.sbu))];
+  let totalActual = data.reduce((s,r)=>s+(parseFloat(r['Actual Expense BDT']||r['MOH Cost (BDT)']||r['Total Expenxe']||0)),0);
+
+  content.innerHTML = `
     <div class="kpi-grid">
-      <div class="kpi-card danger"><div class="kpi-label">Data Structure</div><div class="kpi-value">Complex</div><div class="kpi-sub">Multi-SBU Blocks detected</div></div>
+      <div class="kpi-card info"><div class="kpi-label">SBUs Covered</div><div class="kpi-value">${sbus.length}</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Total Transactions</div><div class="kpi-value">${data.length}</div></div>
+      <div class="kpi-card purple"><div class="kpi-label">Total Actual Cost</div><div class="kpi-value">${(totalActual/1000000).toFixed(2)}M</div></div>
     </div>
     <div class="ai-card">
       <div class="ai-header"><div class="ai-icon">🤖</div><h3>MOH Cost Analysis</h3></div>
       <div class="ai-insights">
-        <div class="insight-item warning"><strong>Structure Notice</strong> The MOH sheet contains multiple SBU blocks stacked vertically with daily columns. It is recommended to create a separate flat sheet for MOH or use Apps Script to parse the blocks properly. Currently displaying raw rows below.</div>
+        <div class="insight-item warning"><strong>Structure Notice</strong> The MOH sheet contains multiple SBU blocks stacked vertically. Data is parsed dynamically. Please review the table for exact figures.</div>
       </div>
     </div>
-    <div class="table-card"><div class="table-title">Raw MOH Cost Data</div><div class="table-wrap"><table id="mohTable"></table></div></div>
+    <div class="table-card"><div class="table-title">MOH Cost - All Transactions</div><div class="table-wrap"><table id="mohTable"></table></div></div>
   `;
-  let html = `<thead><tr><th>Sl</th><th>Transaction Name</th><th>UOM</th><th>MOH QTY</th><th>MOH Cost</th></tr></thead><tbody>`;
-  data.slice(0, 50).forEach(r => {
-    html += `<tr><td>${r.Sl}</td><td>${r['Transaction Name']}</td><td>${r.UOM}</td><td>${r['MOH QTY']}</td><td>${r['MOH Cost (BDT)']}</td></tr>`;
+
+  let allKeys = new Set();
+  data.forEach(r => Object.keys(r).forEach(k => allKeys.add(k)));
+  let headers = [...allKeys].filter(h => h !== 'sbu');
+  
+  let html = `<thead><tr><th>SBU</th>${headers.map(h=>`<th>${h}</th>`).join('')}</tr></thead><tbody>`;
+  data.forEach(r => {
+    html += `<tr><td>${r.sbu}</td>${headers.map(h=>`<td>${r[h] !== undefined ? r[h] : ''}</td>`).join('')}</tr>`;
   });
   document.getElementById('mohTable').innerHTML = html + '</tbody>';
 }
 
-// ===== BREAKDOWN SECTION =====
+// --- BREAKDOWN SECTION ---
 function renderBreakdown(container) {
   container.innerHTML = `
     <div class="kpi-grid">
@@ -435,7 +479,6 @@ function renderBreakdown(container) {
   `;
 }
 
-// Start the engine
 init();
 </script>
 </body>
