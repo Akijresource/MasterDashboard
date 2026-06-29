@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>DCOO Master Dashboard - Live</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#243449; --border:#334155;
+    --text:#e2e8f0; --muted:#94a3b8;
+    --primary:#3b82f6; --success:#10b981; --warning:#f59e0b; --danger:#ef4444; --info:#06b6d4; --purple:#8b5cf6;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);display:flex;min-height:100vh}
+  .sidebar{width:240px;background:linear-gradient(180deg,#0b1220,#111c30);border-right:1px solid var(--border);padding:20px 0;position:fixed;height:100vh;overflow-y:auto;z-index:100}
+  .logo{padding:0 24px 24px;border-bottom:1px solid var(--border);margin-bottom:16px}
+  .logo h1{font-size:18px;font-weight:700;color:#fff}
+  .logo p{font-size:11px;color:var(--muted);margin-top:4px}
+  .nav-item{display:flex;align-items:center;gap:12px;padding:12px 24px;color:var(--muted);cursor:pointer;transition:.2s;border-left:3px solid transparent;font-size:14px}
+  .nav-item:hover{background:rgba(59,130,246,.08);color:var(--text)}
+  .nav-item.active{background:rgba(59,130,246,.15);color:var(--primary);border-left-color:var(--primary)}
+  .main{margin-left:240px;flex:1;padding:24px 32px;width:calc(100% - 240px)}
+  .topbar{display:flex;justify-content:space-between;align-items:center;margin-bottom:24px;flex-wrap:wrap;gap:16px}
+  .topbar h2{font-size:22px;font-weight:700;color:#fff}
+  .topbar .subtitle{font-size:13px;color:var(--muted)}
+  .filters{display:flex;gap:12px;flex-wrap:wrap}
+  .filter-group{display:flex;flex-direction:column;gap:4px}
+  .filter-group label{font-size:11px;color:var(--muted);text-transform:uppercase}
+  select{background:var(--panel);border:1px solid var(--border);color:var(--text);padding:8px 12px;border-radius:6px;font-size:13px;min-width:140px}
+  .section{display:none;animation:fade .3s ease}
+  .section.active{display:block}
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+  .kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+  .kpi-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;position:relative;overflow:hidden}
+  .kpi-card::before{content:'';position:absolute;left:0;top:0;bottom:0;width:4px;background:var(--primary)}
+  .kpi-card.success::before{background:var(--success)}
+  .kpi-card.warning::before{background:var(--warning)}
+  .kpi-card.danger::before{background:var(--danger)}
+  .kpi-card.info::before{background:var(--info)}
+  .kpi-card.purple::before{background:var(--purple)}
+  .kpi-label{font-size:12px;color:var(--muted);text-transform:uppercase;margin-bottom:8px}
+  .kpi-value{font-size:24px;font-weight:700;color:#fff}
+  .kpi-sub{font-size:11px;color:var(--muted);margin-top:6px}
+  .chart-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:16px;margin-bottom:24px}
+  .chart-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px}
+  .chart-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}
+  .chart-wrap{position:relative;height:280px}
+  .table-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:24px}
+  .table-title{font-size:14px;font-weight:600;color:#fff;margin-bottom:12px}
+  .table-wrap{overflow-x:auto;max-height:480px;overflow-y:auto}
+  table{width:100%;border-collapse:collapse;font-size:12px}
+  th{background:var(--panel2);padding:10px;text-align:left;font-weight:600;color:var(--muted);text-transform:uppercase;position:sticky;top:0;z-index:5}
+  td{padding:10px;border-bottom:1px solid rgba(51,65,85,.4)}
+  tr:hover td{background:rgba(59,130,246,.05)}
+  .badge{display:inline-block;padding:3px 8px;border-radius:10px;font-size:10px;font-weight:600}
+  .badge.Completed{background:rgba(16,185,129,.15);color:var(--success)}
+  .badge.Rejected{background:rgba(239,68,68,.15);color:var(--danger)}
+  .badge.Ongoing{background:rgba(245,158,11,.15);color:var(--warning)}
+  .badge.Initiated{background:rgba(6,182,212,.15);color:var(--info)}
+  .ai-card{background:linear-gradient(135deg,rgba(139,92,246,.1),rgba(59,130,246,.08));border:1px solid rgba(139,92,246,.3);border-radius:10px;padding:20px;margin-bottom:24px}
+  .ai-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .ai-icon{width:36px;height:36px;border-radius:8px;background:linear-gradient(135deg,var(--purple),var(--primary));display:flex;align-items:center;justify-content:center;font-size:18px}
+  .ai-header h3{font-size:15px;font-weight:700;color:#fff}
+  .ai-insights{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+  .insight-item{background:rgba(15,23,42,.5);border:1px solid var(--border);border-radius:8px;padding:12px;font-size:12.5px;line-height:1.5}
+  .insight-item strong{display:block;color:var(--primary);margin-bottom:4px;font-size:12px;text-transform:uppercase}
+  .insight-item.danger strong{color:var(--danger)}
+  .insight-item.success strong{color:var(--success)}
+  .insight-item.warning strong{color:var(--warning)}
+  .embed-card{background:var(--panel);border:1px solid var(--border);border-radius:10px;overflow:hidden;margin-top:8px}
+  .embed-card iframe{width:100%;height:800px;border:0}
+  .loader{border:4px solid #f3f3f3;border-top:4px solid var(--primary);border-radius:50%;width:30px;height:30px;animation:spin 1s linear infinite;margin:20px auto}
+  @keyframes spin{0%{transform:rotate(0)}100%{transform:rotate(360deg)}}
+  ::-webkit-scrollbar{width:8px;height:8px} ::-webkit-scrollbar-track{background:var(--bg)} ::-webkit-scrollbar-thumb{background:var(--border);border-radius:4px}
+  @media(max-width:900px){.sidebar{display:none}.main{margin-left:0;width:100%}}
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="logo"><h1>DCOO Dashboard</h1><p>Live Google Sheet Sync</p></div>
+  <div class="nav-item active" onclick="showSection('oee', 'SBU Wise OEE', 'Overall Equipment Effectiveness')"><span class="dot"></span>SBU Wise OEE</div>
+  <div class="nav-item" onclick="showSection('raci', 'RACI Import', 'Project Tracking & SPI')"><span class="dot"></span>RACI Import</div>
+  <div class="nav-item" onclick="showSection('ic', 'Innovation Cards', 'IC Status & Flow')"><span class="dot"></span>IC Cards</div>
+  <div class="nav-item" onclick="showSection('pc', 'Project Cards', 'PC Status & Flow')"><span class="dot"></span>PC Cards</div>
+  <div class="nav-item" onclick="showSection('moh', 'MOH Cost', 'Manufacturing Overheads')"><span class="dot"></span>MOH Cost</div>
+  <div class="nav-item" onclick="showSection('breakdown', 'Breakdown Analysis', 'Embedded Dashboard')"><span class="dot"></span>Breakdown Analysis</div>
+  <div style="padding:24px;font-size:11px;color:var(--muted);border-top:1px solid var(--border);margin-top:24px">
+    <p>Sheet ID:</p>
+    <p style="color:var(--primary);word-break:break-all;margin-top:4px;font-size:10px">17xgLNSWgPaPa...</p>
+    <p style="margin-top:12px">Status: <span id="syncStatus" style="color:var(--success)">Connecting...</span></p>
+  </div>
+</div>
+
+<div class="main">
+  <div class="topbar">
+    <div>
+      <h2 id="pageTitle">SBU Wise OEE</h2>
+      <p class="subtitle" id="pageSubtitle">Overall Equipment Effectiveness</p>
+    </div>
+    <div class="filters">
+      <div class="filter-group"><label>SBU</label><select id="filterSBU" onchange="applyFilters()"><option value="">All</option></select></div>
+      <div class="filter-group"><label>Month</label><select id="filterMonth" onchange="applyFilters()"><option value="">All</option></select></div>
+      <div class="filter-group"><label>Section</label><select id="filterSection" onchange="applyFilters()"><option value="">All</option></select></div>
+    </div>
+  </div>
+
+  <div id="dynamicContent"><div class="loader"></div></div>
+</div>
+
+<script>
+// ===== CONFIG =====
+const SHEET_ID = '17xgLNSWgPaPa-WR6MpPa5dcvQUoUaQKqlT6OyVCoJ4U';
+let allData = { oee: [], raci: [], ic: [], pc: [], moh: [] };
+let currentSection = 'oee';
+
+// ===== GOOGLE SHEET FETCH ENGINE =====
+async function fetchSheet(sheetName) {
+  const query = encodeURIComponent('SELECT *');
+  const url = `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent(sheetName)}&tq=${query}`;
+  try {
+    const res = await fetch(url);
+    const text = await res.text();
+    const json = JSON.parse(text.substring(47).slice(0, -2));
+    const rows = json.table.rows;
+    const cols = json.table.cols.map(c => c.label || c.id);
+    
+    return rows.map(r => {
+      let obj = {};
+      r.c.forEach((cell, i) => {
+        let val = cell ? cell.v : '';
+        // Clean asterisks and errors
+        if (typeof val === 'string' && (val.includes('*') || val.includes('#DIV') || val.includes('#REF'))) val = 0;
+        obj[cols[i]] = val;
+      });
+      return obj;
+    });
+  } catch (e) {
+    console.error(`Error fetching ${sheetName}:`, e);
+    return [];
+  }
+}
+
+// ===== INIT =====
+async function init() {
+  document.getElementById('syncStatus').innerText = 'Fetching Data...';
+  // Fetch all sheets simultaneously
+  const [oee, raci, ic, pc, moh] = await Promise.all([
+    fetchSheet('SBU Wise OEE'),
+    fetchSheet('RACI Import'),
+    fetchSheet('IC'),
+    fetchSheet('PC'),
+    fetchSheet('MOH COST')
+  ]);
+  
+  allData.oee = oee.filter(r => r.SBU);
+  allData.raci = raci.filter(r => r['Project Name']);
+  allData.ic = ic.filter(r => r.SBU && r['Card No.']);
+  allData.pc = pc.filter(r => r.SBU && r['Card No']);
+  allData.moh = moh.filter(r => r['Transaction Name']); // Basic filter
+  
+  document.getElementById('syncStatus').innerText = 'Live Synced';
+  populateFilters();
+  applyFilters();
+}
+
+// ===== NAVIGATION =====
+function showSection(sec, title, sub) {
+  currentSection = sec;
+  document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
+  event.target.closest('.nav-item').classList.add('active');
+  document.getElementById('pageTitle').innerText = title;
+  document.getElementById('pageSubtitle').innerText = sub;
+  applyFilters();
+}
+
+// ===== FILTERS =====
+function populateFilters() {
+  let sbus = new Set(), months = new Set(), sections = new Set();
+  allData.oee.forEach(r => { sbus.add(r.SBU); months.add(r.Month); sections.add(r.Section); });
+  allData.ic.forEach(r => { sbus.add(r.SBU); months.add(r.Month); sections.add(r.Section); });
+  allData.pc.forEach(r => { sbus.add(r.SBU); months.add(r['Created Month']); sections.add(r.Section); });
+
+  fillSelect('filterSBU', sbus);
+  fillSelect('filterMonth', months);
+  fillSelect('filterSection', sections);
+}
+
+function fillSelect(id, set) {
+  const sel = document.getElementById(id);
+  const currentVal = sel.value;
+  sel.innerHTML = '<option value="">All</option>';
+  [...set].filter(Boolean).sort().forEach(v => {
+    const opt = document.createElement('option');
+    opt.value = v; opt.innerText = v;
+    sel.appendChild(opt);
+  });
+  sel.value = currentVal;
+}
+
+function getFilteredData(type) {
+  const sbu = document.getElementById('filterSBU').value;
+  const month = document.getElementById('filterMonth').value;
+  const section = document.getElementById('filterSection').value;
+  return allData[type].filter(r => {
+    let rSbu = r.SBU || r['SBU DATASTREAMS: ACCL'] || '';
+    let rMonth = r.Month || r['Created Month'] || '';
+    let rSection = r.Section || '';
+    return (!sbu || rSbu === sbu) && (!month || rMonth === month) && (!section || rSection === section);
+  });
+}
+
+// ===== RENDER ENGINE =====
+function applyFilters() {
+  const content = document.getElementById('dynamicContent');
+  content.innerHTML = '';
+
+  if (currentSection === 'oee') renderOEE(content);
+  else if (currentSection === 'raci') renderRACI(content);
+  else if (currentSection === 'ic') renderIC(content);
+  else if (currentSection === 'pc') renderPC(content);
+  else if (currentSection === 'moh') renderMOH(content);
+  else if (currentSection === 'breakdown') renderBreakdown(content);
+}
+
+// ===== OEE SECTION =====
+function renderOEE(container) {
+  const data = getFilteredData('oee');
+  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+
+  const avg = (key) => data.reduce((s, r) => s + (parseFloat(r[key]) || 0), 0) / data.length;
+  let oee = avg('OEE'), npt = avg('NPT %'), mttr = avg('MTTR'), mtbf = avg('MTBF');
+  let shiftCap = data.reduce((s, r) => s + (parseFloat(r['Shift Capacity']) || 0), 0);
+  let target = data.reduce((s, r) => s + (parseFloat(r['Target']) || 0), 0);
+  let actual = data.reduce((s, r) => s + (parseFloat(r['Actual Output']) || 0), 0);
+
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card ${oee>=85?'success':'danger'}"><div class="kpi-label">Overall OEE</div><div class="kpi-value">${oee.toFixed(2)}%</div><div class="kpi-sub">Target: 85%</div></div>
+      <div class="kpi-card warning"><div class="kpi-label">Avg NPT</div><div class="kpi-value">${npt.toFixed(2)}%</div></div>
+      <div class="kpi-card info"><div class="kpi-label">Avg MTTR</div><div class="kpi-value">${mttr.toFixed(2)} Hrs</div></div>
+      <div class="kpi-card purple"><div class="kpi-label">Avg MTBF</div><div class="kpi-value">${mtbf.toFixed(2)} Hrs</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Total Shift Cap</div><div class="kpi-value">${shiftCap.toLocaleString()}</div></div>
+      <div class="kpi-card danger"><div class="kpi-label">Target vs Actual</div><div class="kpi-value">${actual.toLocaleString()}</div><div class="kpi-sub">Target: ${target.toLocaleString()}</div></div>
+    </div>
+    
+    <div class="chart-grid">
+      <div class="chart-card"><div class="chart-title">OEE vs Target (85%)</div><div class="chart-wrap"><canvas id="oeeTargetChart"></canvas></div></div>
+      <div class="chart-card"><div class="chart-title">Availability / Performance / Quality</div><div class="chart-wrap"><canvas id="apqChart"></canvas></div></div>
+    </div>
+
+    <div class="ai-card">
+      <div class="ai-header"><div class="ai-icon">🤖</div><h3>AI Analysis & Suggestions</h3></div>
+      <div class="ai-insights">
+        <div class="insight-item ${oee<85?'danger':'success'}"><strong>OEE Performance</strong> Current OEE is ${oee.toFixed(2)}%. ${oee<85?'This is below the 85% target. Focus on reducing NPT and improving machine availability.':'Excellent work! Meeting the 85% target.'}</div>
+        <div class="insight-item ${npt>20?'danger':'success'}"><strong>Non-Productive Time (NPT)</strong> Average NPT is ${npt.toFixed(2)}%. ${npt>20?'High NPT detected. Review breakdown causes and optimize changeover times.':'NPT is within acceptable limits.'}</div>
+        <div class="insight-item warning"><strong>Target vs Actual</strong> Total output is ${(actual/target*100).toFixed(2)}% of the target. ${actual<target?'Consider increasing shift capacity utilization or reducing speed losses.':'Output is exceeding targets.'}</div>
+      </div>
+    </div>
+
+    <div class="table-card">
+      <div class="table-title">Detailed OEE Records</div>
+      <div class="table-wrap"><table id="oeeTable"></table></div>
+    </div>
+  `;
+
+  // Charts
+  new Chart(document.getElementById('oeeTargetChart'), {
+    type: 'bar',
+    data: { labels: ['Actual OEE', 'Target'], datasets: [{ data: [oee.toFixed(2), 85], backgroundColor: ['#3b82f6', '#10b981'], barThickness: 40 }] },
+    options: { scales: { y: { beginAtZero: true, max: 100 } }, plugins: { legend: { display: false } } }
+  });
+
+  new Chart(document.getElementById('apqChart'), {
+    type: 'radar',
+    data: { labels: ['Availability', 'Performance', 'Quality'], datasets: [{ label: 'Avg %', data: [avg('AV'), avg('Perf'), avg('Quality')], borderColor: '#8b5cf6', backgroundColor: 'rgba(139,92,246,0.2)' }] },
+    options: { scales: { r: { beginAtZero: true, max: 100 } } }
+  });
+
+  // Table
+  let html = `<thead><tr><th>SBU</th><th>Section</th><th>Month</th><th>OEE</th><th>NPT</th><th>MTTR</th><th>MTBF</th><th>Target</th><th>Actual</th></tr></thead><tbody>`;
+  data.forEach(r => {
+    html += `<tr><td>${r.SBU}</td><td>${r.Section}</td><td>${r.Month}</td><td>${r.OEE}</td><td>${r['NPT %']}</td><td>${r.MTTR}</td><td>${r.MTBF}</td><td>${r.Target}</td><td>${r['Actual Output']}</td></tr>`;
+  });
+  document.getElementById('oeeTable').innerHTML = html + '</tbody>';
+}
+
+// ===== RACI SECTION =====
+function renderRACI(container) {
+  const data = getFilteredData('raci');
+  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+
+  let totalPlanned = data.reduce((s,r)=>s+parseFloat(r['Sum of Planned Value (BDT)']||0),0);
+  let totalEarned = data.reduce((s,r)=>s+parseFloat(r['Sum of Earned Value (BDT)']||0),0);
+  let avgSpi = data.reduce((s,r)=>s+parseFloat(r['SPI']||0),0)/data.length;
+
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card info"><div class="kpi-label">Active Projects</div><div class="kpi-value">${data.length}</div></div>
+      <div class="kpi-card ${avgSpi>=1?'success':'warning'}"><div class="kpi-label">Avg SPI</div><div class="kpi-value">${avgSpi.toFixed(2)}</div><div class="kpi-sub">${avgSpi>=1?'On Track':'Needs Attention'}</div></div>
+      <div class="kpi-card purple"><div class="kpi-label">Total Planned</div><div class="kpi-value">${(totalPlanned/1000000).toFixed(2)}M</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Total Earned</div><div class="kpi-value">${(totalEarned/1000000).toFixed(2)}M</div></div>
+    </div>
+    <div class="ai-card">
+      <div class="ai-header"><div class="ai-icon">🤖</div><h3>AI Project Analysis</h3></div>
+      <div class="ai-insights">
+        <div class="insight-item ${avgSpi<1?'danger':'success'}"><strong>Schedule Performance</strong> Average SPI is ${avgSpi.toFixed(2)}. ${avgSpi<1?'Projects are behind schedule. Review critical path activities.':'Projects are progressing on or ahead of schedule.'}</div>
+        <div class="insight-item warning"><strong>Budget Utilization</strong> ${(totalEarned/totalPlanned*100).toFixed(2)}% of planned budget has been earned. Monitor projects with negative variance closely.</div>
+      </div>
+    </div>
+    <div class="table-card"><div class="table-title">Active Projects Overview</div><div class="table-wrap"><table id="raciTable"></table></div></div>
+  `;
+
+  let html = `<thead><tr><th>SBU</th><th>Project</th><th>Planned (BDT)</th><th>Earned (BDT)</th><th>SPI</th><th>Causes</th><th>Action Plan</th><th>Responsible</th></tr></thead><tbody>`;
+  data.forEach(r => {
+    html += `<tr><td>${r.SBU}</td><td>${r['Project Name']}</td><td>${r['Sum of Planned Value (BDT)']}</td><td>${r['Sum of Earned Value (BDT)']}</td><td><span class="badge ${parseFloat(r.SPI)>=1?'Completed':'Rejected'}">${r.SPI}</span></td><td>${r.Causes}</td><td>${r['Action Plan']}</td><td>${r.Responsible}</td></tr>`;
+  });
+  document.getElementById('raciTable').innerHTML = html + '</tbody>';
+}
+
+// ===== IC SECTION =====
+function renderIC(container) {
+  const data = getFilteredData('ic');
+  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+
+  let completed = data.filter(r=>r.Status==='Completed').length;
+  let rejected = data.filter(r=>r.Status==='Rejected').length;
+  let ongoing = data.filter(r=>r.Status==='Ongoing').length;
+  let initiated = data.filter(r=>r.Status==='Initiated').length;
+
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card info"><div class="kpi-label">Total IC Cards</div><div class="kpi-value">${data.length}</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Completed</div><div class="kpi-value">${completed}</div></div>
+      <div class="kpi-card danger"><div class="kpi-label">Rejected</div><div class="kpi-value">${rejected}</div></div>
+      <div class="kpi-card warning"><div class="kpi-label">Ongoing</div><div class="kpi-value">${ongoing}</div></div>
+      <div class="kpi-card purple"><div class="kpi-label">Initiated</div><div class="kpi-value">${initiated}</div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card"><div class="chart-title">Status Distribution</div><div class="chart-wrap"><canvas id="icChart"></canvas></div></div>
+    </div>
+    <div class="ai-card">
+      <div class="ai-header"><div class="ai-icon">🤖</div><h3>AI Card Analysis</h3></div>
+      <div class="ai-insights">
+        <div class="insight-item ${rejected>completed?'danger':'success'}"><strong>Completion Rate</strong> ${completed} cards completed vs ${rejected} rejected. ${rejected>completed?'Rejection rate is high. Review quality of initiation.':'Good completion rate.'}</div>
+      </div>
+    </div>
+    <div class="table-card"><div class="table-title">Latest IC Cards</div><div class="table-wrap"><table id="icTable"></table></div></div>
+  `;
+
+  new Chart(document.getElementById('icChart'), {
+    type: 'doughnut',
+    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] }
+  });
+
+  let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Date</th><th>Status</th></tr></thead><tbody>`;
+  data.slice(-20).reverse().forEach(r => {
+    html += `<tr><td>${r.SBU}</td><td>${r['Card No.']}</td><td>${r.Section}</td><td>${r['Created Date']}</td><td><span class="badge ${r.Status}">${r.Status}</span></td></tr>`;
+  });
+  document.getElementById('icTable').innerHTML = html + '</tbody>';
+}
+
+// ===== PC SECTION =====
+function renderPC(container) {
+  const data = getFilteredData('pc');
+  if (data.length === 0) return container.innerHTML = '<p style="color:#fff">No data</p>';
+
+  let completed = data.filter(r=>r.Status==='Completed').length;
+  let rejected = data.filter(r=>r.Status==='Rejected').length;
+  let ongoing = data.filter(r=>r.Status==='Ongoing').length;
+  let initiated = data.filter(r=>r.Status==='Initiated').length;
+
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card info"><div class="kpi-label">Total PC Cards</div><div class="kpi-value">${data.length}</div></div>
+      <div class="kpi-card success"><div class="kpi-label">Completed</div><div class="kpi-value">${completed}</div></div>
+      <div class="kpi-card danger"><div class="kpi-label">Rejected</div><div class="kpi-value">${rejected}</div></div>
+      <div class="kpi-card warning"><div class="kpi-label">Ongoing</div><div class="kpi-value">${ongoing}</div></div>
+      <div class="kpi-card purple"><div class="kpi-label">Initiated</div><div class="kpi-value">${initiated}</div></div>
+    </div>
+    <div class="chart-grid">
+      <div class="chart-card"><div class="chart-title">Status Distribution</div><div class="chart-wrap"><canvas id="pcChart"></canvas></div></div>
+    </div>
+    <div class="ai-card">
+      <div class="ai-header"><div class="ai-icon">🤖</div><h3>AI Card Analysis</h3></div>
+      <div class="ai-insights">
+        <div class="insight-item ${rejected>completed?'danger':'success'}"><strong>Completion Rate</strong> ${completed} cards completed vs ${rejected} rejected. ${rejected>completed?'Rejection rate is high. Review quality of initiation.':'Good completion rate.'}</div>
+      </div>
+    </div>
+    <div class="table-card"><div class="table-title">Latest PC Cards</div><div class="table-wrap"><table id="pcTable"></table></div></div>
+  `;
+
+  new Chart(document.getElementById('pcChart'), {
+    type: 'doughnut',
+    data: { labels: ['Completed', 'Rejected', 'Ongoing', 'Initiated'], datasets: [{ data: [completed, rejected, ongoing, initiated], backgroundColor: ['#10b981', '#ef4444', '#f59e0b', '#06b6d4'] }] }
+  });
+
+  let html = `<thead><tr><th>SBU</th><th>Card No</th><th>Section</th><th>Created Month</th><th>Status</th></tr></thead><tbody>`;
+  data.slice(-20).reverse().forEach(r => {
+    html += `<tr><td>${r.SBU}</td><td>${r['Card No']}</td><td>${r.Section}</td><td>${r['Created Month']}</td><td><span class="badge ${r.Status}">${r.Status || 'N/A'}</span></td></tr>`;
+  });
+  document.getElementById('pcTable').innerHTML = html + '</tbody>';
+}
+
+// ===== MOH SECTION =====
+function renderMOH(container) {
+  const data = allData.moh; // MOH is complex, showing raw for now
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card danger"><div class="kpi-label">Data Structure</div><div class="kpi-value">Complex</div><div class="kpi-sub">Multi-SBU Blocks detected</div></div>
+    </div>
+    <div class="ai-card">
+      <div class="ai-header"><div class="ai-icon">🤖</div><h3>MOH Cost Analysis</h3></div>
+      <div class="ai-insights">
+        <div class="insight-item warning"><strong>Structure Notice</strong> The MOH sheet contains multiple SBU blocks stacked vertically with daily columns. It is recommended to create a separate flat sheet for MOH or use Apps Script to parse the blocks properly. Currently displaying raw rows below.</div>
+      </div>
+    </div>
+    <div class="table-card"><div class="table-title">Raw MOH Cost Data</div><div class="table-wrap"><table id="mohTable"></table></div></div>
+  `;
+  let html = `<thead><tr><th>Sl</th><th>Transaction Name</th><th>UOM</th><th>MOH QTY</th><th>MOH Cost</th></tr></thead><tbody>`;
+  data.slice(0, 50).forEach(r => {
+    html += `<tr><td>${r.Sl}</td><td>${r['Transaction Name']}</td><td>${r.UOM}</td><td>${r['MOH QTY']}</td><td>${r['MOH Cost (BDT)']}</td></tr>`;
+  });
+  document.getElementById('mohTable').innerHTML = html + '</tbody>';
+}
+
+// ===== BREAKDOWN SECTION =====
+function renderBreakdown(container) {
+  container.innerHTML = `
+    <div class="kpi-grid">
+      <div class="kpi-card info"><div class="kpi-label">Embedded Dashboard</div><div class="kpi-value">SBU Breakdown</div><div class="kpi-sub">Live from GitHub Pages</div></div>
+    </div>
+    <div class="embed-card"><iframe src="https://ratul-17.github.io/Breakdown/" title="Breakdown Analysis"></iframe></div>
+  `;
+}
+
+// Start the engine
+init();
+</script>
+</body>
+</html>
