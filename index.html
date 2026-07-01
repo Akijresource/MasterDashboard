@@ -26,7 +26,7 @@
 
   <script type="text/babel">
     const { useState, useMemo, useEffect } = React;
-    const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area } = window.Recharts;
+    const { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, PieChart, Pie, Cell, AreaChart, Area, ComposedChart } = window.Recharts;
 
     // --- ICON COMPONENTS ---
     const Icon = ({ path, className }) => (
@@ -49,7 +49,10 @@
     const Wrench = (p) => <Icon {...p} path="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 9.36l-7.1 7.1a2.12 2.12 0 0 1-3-3l7.1-7.1a6 6 0 0 1 9.36-7.94l-3.77 3.77z"/>;
 
     const SHEET_ID = '17xgLNSWgPaPa-WR6MpPa5dcvQUoUaQKqlT6OyVCoJ4U';
+    const NEW_MOH_SHEET_ID = '1qkKQq8LHslh16zggURIYOqn_kwpWbxFGlNpe4KRRukM';
+    
     const getSheetUrl = (sheetName) => `https://docs.google.com/spreadsheets/d/${SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
+    const getNewMohUrl = (sheetName) => `https://docs.google.com/spreadsheets/d/${NEW_MOH_SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(sheetName)}`;
 
     // --- HELPER FUNCTIONS ---
     const safeNum = (val) => {
@@ -140,73 +143,76 @@
       return data;
     };
 
-    // 2. Long-Format MOH Parser
-    // Reads the flat Master schema: Date, SBU, Cost Category, UOM, MOH QTY, MOH Cost (BDT), Entered By, Notes
-    // One row per entry. Month is derived from Date column automatically.
-    const parseMOHCSV = (csvStr) => {
+    // 2. New Flat Table Parser (Specifically built for the NEW structured MOH COST Sheet)
+    const parseNewMOHCSV = (csvStr) => {
       if (!csvStr) return [];
+      
+      // Fix embedded newlines
       const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
-      const lines = cleanCSV.trim().split('\n').filter(l => l.trim() !== '');
-      if (lines.length < 2) return [];
+      const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
+      if (lines.length < 3) return [];
+      
+      // Extract Month from C2 (Row index 1, Col index 2 usually)
+      const row2Cols = lines[1].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+      let monthName = row2Cols.length > 2 ? row2Cols[2] : '';
+      if (!monthName) monthName = row2Cols.find(c => c.length > 2) || 'Current Month'; 
 
-      const splitCSVLine = (line) => line.split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+      // Find Header Row dynamically (Row 3 usually)
+      let headerIdx = 2;
+      for (let i = 0; i < Math.min(lines.length, 10); i++) {
+        if (lines[i].toUpperCase().includes('TOTAL MOH')) {
+          headerIdx = i;
+          break;
+        }
+      }
 
-      const headers = splitCSVLine(lines[0]).map(h => h.toLowerCase().trim());
-      const idx = {
-        date:     headers.findIndex(h => h.includes('date')),
-        sbu:      headers.findIndex(h => h === 'sbu'),
-        cat:      headers.findIndex(h => h.includes('cost category') || h.includes('category')),
-        uom:      headers.findIndex(h => h === 'uom'),
-        qty:      headers.findIndex(h => h.includes('moh qty') || h.includes('qty')),
-        cost:     headers.findIndex(h => h.includes('moh cost') || (h.includes('cost') && h.includes('bdt'))),
-        enteredBy:headers.findIndex(h => h.includes('entered')),
-        notes:    headers.findIndex(h => h.includes('notes')),
-      };
-
-      const MONTH_NAMES = ['January','February','March','April','May','June','July','August','September','October','November','December'];
-
+      const headers = lines[headerIdx].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
       const data = [];
-      for (let i = 1; i < lines.length; i++) {
-        const cols = splitCSVLine(lines[i]);
-        if (cols.join('').trim() === '') continue;
+      const standardHeaders = ['SBU', 'DATE', 'TOTAL MOH COST', 'MT', 'COST/MT', 'COST / MT'];
 
-        const rawDate = idx.date >= 0 ? cols[idx.date] : '';
-        const rawCost = idx.cost >= 0 ? cols[idx.cost] : '';
-        const cost = safeNum(rawCost);
-        if (!rawDate || cost === 0) continue;  // skip blank/placeholder rows
+      for (let i = headerIdx + 1; i < lines.length; i++) {
+        const values = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
+        if (values.join('').trim() === '') continue;
 
-        // Parse date -> derive Month and Year
-        const dateObj = new Date(rawDate);
-        const validDate = !isNaN(dateObj.getTime());
-        const monthName = validDate ? MONTH_NAMES[dateObj.getMonth()] : '';
-        const year = validDate ? dateObj.getFullYear() : '';
-        const monthYear = monthName ? `${monthName} ${year}` : '';
-        const dayOfMonth = validDate ? dateObj.getDate() : null;
-
-        const sbu      = idx.sbu >= 0 ? cols[idx.sbu] : '';
-        const category = idx.cat >= 0 ? cols[idx.cat].replace(/^MOH\s*-\s*/i, '').trim() : '';
-        const uom      = idx.uom >= 0 ? cols[idx.uom] : '';
-        const qty      = safeNum(idx.qty >= 0 ? cols[idx.qty] : '');
-
-        if (!sbu || !category) continue;
-
-        data.push({
-          Date: rawDate,
-          DateObj: validDate ? dateObj : null,
-          Day: dayOfMonth,
-          Month: monthName,
-          Year: year,
-          MonthYear: monthYear,
-          SBU: sbu,
-          Category: category,
-          UOM: uom,
-          'MOH QTY': qty,
-          'MOH Cost': cost,
-          // Cost per unit: only meaningful when QTY > 0
-          'Cost per Unit': qty > 0 ? cost / qty : 0,
-          'Entered By': idx.enteredBy >= 0 ? cols[idx.enteredBy] : '',
-          Notes: idx.notes >= 0 ? cols[idx.notes] : '',
+        const obj = {};
+        headers.forEach((h, idx) => {
+          if (h) obj[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
         });
+
+        // Dynamic Key finders
+        const dateKey = Object.keys(obj).find(k => k.toUpperCase().includes('DATE')) || 'Date';
+        const costKey = Object.keys(obj).find(k => k.toUpperCase().includes('TOTAL MOH')) || 'Total MOH Cost';
+        const mtKey = Object.keys(obj).find(k => k.toUpperCase() === 'MT') || 'MT';
+        const cpuKey = Object.keys(obj).find(k => k.toUpperCase().includes('COST/MT') || k.toUpperCase().includes('COST / MT')) || 'Cost/MT';
+        const sbuKey = Object.keys(obj).find(k => k.toUpperCase().includes('SBU')) || 'SBU';
+
+        const sbuVal = obj[sbuKey] || 'ACCL'; // Default to ACCL if left blank
+        const dateVal = obj[dateKey];
+        const costVal = safeNum(obj[costKey]);
+        const mtVal = safeNum(obj[mtKey]);
+        const cpuVal = safeNum(obj[cpuKey]);
+
+        // Push valid data rows
+        if (dateVal && (costVal > 0 || mtVal > 0)) {
+           const rowData = {
+              SBU: sbuVal,
+              Date: dateVal,
+              Month: monthName,
+              'Total MOH Cost': costVal,
+              'MT': mtVal,
+              'Cost/MT': cpuVal,
+              _rawParams: {}
+           };
+
+           // Extract all the variable parameter costs dynamically (ignoring standards)
+           headers.forEach(h => {
+             if (h && !standardHeaders.includes(h.toUpperCase()) && !h.toUpperCase().includes('REMARK') && !h.toUpperCase().includes('MONTH')) {
+                rowData._rawParams[h] = safeNum(obj[h]);
+             }
+           });
+
+           data.push(rowData);
+        }
       }
       return data;
     };
@@ -653,526 +659,132 @@
       );
     };
 
-    // MOH palette
-    const MOH_COLORS = ['#7c3aed','#2563eb','#0891b2','#059669','#d97706','#dc2626','#db2777','#65a30d','#9333ea','#0284c7'];
-    const fmtBDT = (n) => n >= 1e7 ? `৳${(n/1e7).toFixed(2)}Cr` : n >= 1e5 ? `৳${(n/1e5).toFixed(1)}L` : `৳${Math.round(n).toLocaleString()}`;
-    const fmtBDTFull = (n) => `৳${Math.round(n).toLocaleString()}`;
-
-    // Sub-tab button used inside SectionMOH
-    const SubTab = ({ label, active, onClick }) => (
-      <button onClick={onClick}
-        className={`px-4 py-2 rounded-lg text-sm font-semibold transition-all whitespace-nowrap ${
-          active ? 'bg-violet-600 text-white shadow-sm' : 'text-slate-500 hover:text-slate-800 hover:bg-slate-200'
-        }`}>
-        {label}
-      </button>
-    );
-
     const SectionMOH = ({ rawData }) => {
-      const [subTab, setSubTab]     = useState('overview');
-      const [filters, setFilters]   = useState({ sbu: 'All', monthYear: 'All', category: 'All' });
+      const [filters, setFilters] = useState({ sbu: 'All', month: 'All' });
+      
+      const sbus = [...new Set(rawData.map(d => d.SBU))].filter(Boolean);
+      const months = [...new Set(rawData.filter(d => filters.sbu === 'All' || d.SBU === filters.sbu).map(d => d.Month))].filter(Boolean);
 
-      // ── Cascading filter options ──────────────────────────────────────────────
-      const allSBUs = useMemo(() => [...new Set(rawData.map(d => d.SBU))].filter(Boolean).sort(), [rawData]);
+      const filteredData = useMemo(() => {
+        return rawData.filter(d => 
+          (filters.sbu === 'All' || d.SBU === filters.sbu) &&
+          (filters.month === 'All' || d.Month === filters.month)
+        );
+      }, [rawData, filters]);
 
-      const allMonthYears = useMemo(() => {
-        const pool = rawData.filter(d => filters.sbu === 'All' || d.SBU === filters.sbu);
-        const pairs = [...new Set(pool.map(d => d.MonthYear))].filter(Boolean);
-        // Sort chronologically
-        pairs.sort((a, b) => {
-          const parse = s => { const p = s.split(' '); return new Date(`${p[0]} 1, ${p[1]}`).getTime(); };
-          return parse(a) - parse(b);
-        });
-        return pairs;
-      }, [rawData, filters.sbu]);
+      const totalCost = filteredData.reduce((a, c) => a + c['Total MOH Cost'], 0);
+      const totalMT = filteredData.reduce((a, c) => a + c['MT'], 0);
+      const avgCpu = totalMT > 0 ? (totalCost / totalMT) : 0;
 
-      const allCategories = useMemo(() => {
-        return [...new Set(
-          rawData
-            .filter(d => (filters.sbu === 'All' || d.SBU === filters.sbu) && (filters.monthYear === 'All' || d.MonthYear === filters.monthYear))
-            .map(d => d.Category)
-        )].filter(Boolean).sort();
-      }, [rawData, filters.sbu, filters.monthYear]);
+      // Aggregate all 11+ parameters to find the top cost drivers
+      const paramTotals = {};
+      filteredData.forEach(row => {
+         Object.entries(row._rawParams || {}).forEach(([key, val]) => {
+            paramTotals[key] = (paramTotals[key] || 0) + val;
+         });
+      });
+      
+      const paramChartData = Object.entries(paramTotals)
+        .map(([name, cost]) => ({ name, cost }))
+        .sort((a, b) => b.cost - a.cost)
+        .filter(d => d.cost > 0);
 
-      // ── Filtered slice ────────────────────────────────────────────────────────
-      const filtered = useMemo(() => rawData.filter(d =>
-        (filters.sbu === 'All'       || d.SBU === filters.sbu) &&
-        (filters.monthYear === 'All' || d.MonthYear === filters.monthYear) &&
-        (filters.category === 'All'  || d.Category === filters.category)
-      ), [rawData, filters]);
+      const topParam = paramChartData.length > 0 ? paramChartData[0] : null;
 
-      // ── Aggregate helpers ─────────────────────────────────────────────────────
-      const totalCost   = filtered.reduce((a, d) => a + d['MOH Cost'], 0);
-      const totalQty    = filtered.reduce((a, d) => a + d['MOH QTY'], 0);
-      const activeMonths= new Set(filtered.map(d => d.MonthYear)).size;
-      const activeSBUs  = new Set(filtered.map(d => d.SBU)).size;
-      const entriesCount= filtered.length;
+      const aiInsights = [];
+      if (topParam) aiInsights.push(`The top expenditure parameter is "${topParam.name}" accounting for BDT ${topParam.cost.toLocaleString(undefined, {maximumFractionDigits: 0})}. Focus overhead optimization here.`);
+      if (avgCpu > 0) aiInsights.push(`Month-to-date Average Cost per MT is BDT ${avgCpu.toFixed(2)}.`);
 
-      // ── Category breakdown ────────────────────────────────────────────────────
-      const categoryBreakdown = useMemo(() => {
-        const map = {};
-        filtered.forEach(d => {
-          if (!map[d.Category]) map[d.Category] = 0;
-          map[d.Category] += d['MOH Cost'];
-        });
-        return Object.entries(map)
-          .map(([name, cost]) => ({ name, cost, pct: totalCost > 0 ? (cost / totalCost) * 100 : 0 }))
-          .sort((a, b) => b.cost - a.cost);
-      }, [filtered, totalCost]);
-
-      // ── Month-over-Month trend ────────────────────────────────────────────────
-      const mohTrend = useMemo(() => {
-        const map = {};
-        rawData
-          .filter(d => (filters.sbu === 'All' || d.SBU === filters.sbu) && (filters.category === 'All' || d.Category === filters.category))
-          .forEach(d => {
-            if (!d.MonthYear) return;
-            if (!map[d.MonthYear]) map[d.MonthYear] = { name: d.MonthYear, cost: 0, _sort: d.DateObj ? d.DateObj.getTime() : 0 };
-            map[d.MonthYear].cost += d['MOH Cost'];
-            if (d.DateObj && d.DateObj.getTime() > map[d.MonthYear]._sort) map[d.MonthYear]._sort = d.DateObj.getTime();
-          });
-        return Object.values(map).sort((a, b) => a._sort - b._sort);
-      }, [rawData, filters.sbu, filters.category]);
-
-      // ── SBU comparison (for current month filter or all) ─────────────────────
-      const sbuComparison = useMemo(() => {
-        const map = {};
-        rawData
-          .filter(d => (filters.monthYear === 'All' || d.MonthYear === filters.monthYear) && (filters.category === 'All' || d.Category === filters.category))
-          .forEach(d => {
-            if (!map[d.SBU]) map[d.SBU] = { name: d.SBU, cost: 0 };
-            map[d.SBU].cost += d['MOH Cost'];
-          });
-        return Object.values(map).sort((a, b) => b.cost - a.cost);
-      }, [rawData, filters.monthYear, filters.category]);
-
-      // ── Daily trend (when a specific SBU+Month is chosen) ────────────────────
-      const dailyTrend = useMemo(() => {
-        if (filters.monthYear === 'All') return [];
-        const map = {};
-        filtered.forEach(d => {
-          if (!d.Day) return;
-          const key = d.Day;
-          if (!map[key]) map[key] = { day: key, cost: 0, label: `${d.Day}` };
-          map[key].cost += d['MOH Cost'];
-        });
-        return Object.values(map).sort((a, b) => a.day - b.day);
-      }, [filtered]);
-
-      // ── Per-SBU monthly view for drill-down table ─────────────────────────────
-      const sbuMonthlyTable = useMemo(() => {
-        const map = {};
-        rawData.forEach(d => {
-          const key = `${d.SBU}|||${d.MonthYear}`;
-          if (!map[key]) map[key] = { SBU: d.SBU, MonthYear: d.MonthYear, cost: 0, entries: 0, _sort: d.DateObj ? d.DateObj.getTime() : 0 };
-          map[key].cost += d['MOH Cost'];
-          map[key].entries += 1;
-          if (d.DateObj && d.DateObj.getTime() > map[key]._sort) map[key]._sort = d.DateObj.getTime();
-        });
-        return Object.values(map)
-          .filter(r => (filters.sbu === 'All' || r.SBU === filters.sbu) && (filters.monthYear === 'All' || r.MonthYear === filters.monthYear))
-          .sort((a, b) => b._sort - a._sort || b.cost - a.cost);
-      }, [rawData, filters.sbu, filters.monthYear]);
-
-      // ── AI Insights ───────────────────────────────────────────────────────────
-      const aiInsights = useMemo(() => {
-        const ins = [];
-        if (categoryBreakdown.length > 0) {
-          ins.push(`Top expenditure: "${categoryBreakdown[0].name}" at ${fmtBDTFull(categoryBreakdown[0].cost)} (${categoryBreakdown[0].pct.toFixed(1)}% of total).`);
-        }
-        if (mohTrend.length >= 2) {
-          const last = mohTrend[mohTrend.length - 1];
-          const prev = mohTrend[mohTrend.length - 2];
-          const chg = ((last.cost - prev.cost) / prev.cost) * 100;
-          const dir = chg > 0 ? 'up' : 'down';
-          ins.push(`MOH cost is ${dir} ${Math.abs(chg).toFixed(1)}% from ${prev.name} to ${last.name} (${fmtBDTFull(prev.cost)} → ${fmtBDTFull(last.cost)}).`);
-        }
-        if (sbuComparison.length > 1) {
-          const top = sbuComparison[0];
-          const pct = totalCost > 0 ? (top.cost / (sbuComparison.reduce((a,d)=>a+d.cost,0))) * 100 : 0;
-          ins.push(`${top.name} accounts for ${pct.toFixed(1)}% of total MOH spend in the selected period.`);
-        }
-        if (dailyTrend.length > 3) {
-          const avg = dailyTrend.reduce((a,d)=>a+d.cost,0) / dailyTrend.length;
-          const spikes = dailyTrend.filter(d => d.cost > avg * 1.5);
-          if (spikes.length > 0) ins.push(`${spikes.length} day(s) recorded >50% above daily average: days ${spikes.map(d=>d.day).join(', ')}.`);
-        }
-        if (ins.length === 0) ins.push('No anomalies detected in the current selection. Data looks consistent.');
-        return ins;
-      }, [categoryBreakdown, mohTrend, sbuComparison, dailyTrend, totalCost]);
-
-      const noData = rawData.length === 0;
-      const noFiltered = filtered.length === 0 && !noData;
+      // Prepare dynamic table headers for parameters (showing top 5 parameters in the table to avoid scrolling clutter)
+      const allParamKeys = paramChartData.map(p => p.name);
 
       return (
         <div className="space-y-6">
-
-          {/* ── Filter bar ── */}
-          <div className="flex flex-wrap bg-slate-100 p-4 rounded-xl items-end gap-4">
-            <FilterIcon className="w-5 h-5 text-slate-500 shrink-0 self-center" />
-            <FilterSelect label="SBU"      value={filters.sbu}       options={allSBUs}
-              onChange={v => setFilters({ sbu: v, monthYear: 'All', category: 'All' })} />
-            <FilterSelect label="Month"    value={filters.monthYear}  options={allMonthYears}
-              onChange={v => setFilters(f => ({ ...f, monthYear: v, category: 'All' }))} />
-            <FilterSelect label="Category" value={filters.category}   options={allCategories}
-              onChange={v => setFilters(f => ({ ...f, category: v }))} />
-            {(filters.sbu !== 'All' || filters.monthYear !== 'All' || filters.category !== 'All') && (
-              <button onClick={() => setFilters({ sbu: 'All', monthYear: 'All', category: 'All' })}
-                className="self-end px-3 py-2.5 text-xs font-semibold text-violet-700 bg-violet-50 border border-violet-200 rounded-lg hover:bg-violet-100 transition-all">
-                Clear filters
-              </button>
-            )}
+          <div className="flex bg-slate-100 p-4 rounded-xl items-center space-x-6 overflow-x-auto">
+            <FilterIcon className="w-5 h-5 text-slate-500 shrink-0" />
+            <FilterSelect label="SBU" value={filters.sbu} options={sbus} onChange={(v) => setFilters({sbu: v, month: 'All'})} />
+            <FilterSelect label="Month" value={filters.month} options={months} onChange={(v) => setFilters({...filters, month: v})} />
           </div>
 
-          {/* Empty states */}
-          {noData && (
-            <div className="bg-violet-50 border border-violet-200 rounded-2xl p-12 text-center">
-              <Zap className="w-12 h-12 text-violet-300 mx-auto mb-4" />
-              <h3 className="font-bold text-violet-800 text-lg mb-2">No MOH data yet</h3>
-              <p className="text-violet-600 text-sm">Make sure the Google Sheet tab named <code className="bg-violet-100 px-1 rounded">MOH Cost</code> exists and contains the long-format schema (Date, SBU, Cost Category, UOM, MOH QTY, MOH Cost (BDT)).</p>
-            </div>
-          )}
-          {noFiltered && (
-            <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 text-center text-slate-500 text-sm">
-              No entries match the current filter combination.
-            </div>
-          )}
-
-          {!noData && !noFiltered && (<>
-
-          {/* ── KPI strip ── */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            <KPICard title="Total MOH Cost"   value={fmtBDT(totalCost)}         subtext={`${entriesCount} entries`}   icon={Zap}           colorClass="bg-violet-600" />
-            <KPICard title="Months Covered"   value={activeMonths}               subtext="calendar months"             icon={Clock}         colorClass="bg-blue-600" />
-            <KPICard title="SBUs Active"      value={activeSBUs}                 subtext={`of ${allSBUs.length} total`} icon={Target}        colorClass="bg-cyan-600" />
-            <KPICard title="Total MOH QTY"    value={totalQty.toLocaleString(undefined,{maximumFractionDigits:0})} subtext="units logged" icon={Activity} colorClass="bg-emerald-600" />
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <KPICard title="Total MOH Cost" value={`৳${totalCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`} icon={Zap} colorClass="bg-violet-600" />
+            <KPICard title="Avg Cost / MT" value={`৳${avgCpu.toFixed(2)}`} icon={Activity} colorClass="bg-fuchsia-500" />
+            <KPICard title="Total MT (Production)" value={totalMT.toLocaleString(undefined, {maximumFractionDigits: 2})} icon={Target} colorClass="bg-indigo-500" />
+            <KPICard title="Top Cost Driver" value={topParam ? topParam.name : 'N/A'} subtext={topParam ? `৳${topParam.cost.toLocaleString(undefined, {maximumFractionDigits: 0})}` : ''} icon={TrendingUp} colorClass="bg-rose-500" />
           </div>
 
-          {/* ── AI insights ── */}
           <AIInsightCard insights={aiInsights} />
 
-          {/* ── Sub-tabs ── */}
-          <div className="flex gap-2 bg-slate-100 p-1.5 rounded-xl overflow-x-auto w-fit">
-            {[
-              { id: 'overview',  label: 'Overview' },
-              { id: 'daily',     label: 'Daily Trend' },
-              { id: 'sbu',       label: 'SBU Comparison' },
-              { id: 'category',  label: 'Category Breakdown' },
-              { id: 'table',     label: 'Data Table' },
-            ].map(t => <SubTab key={t.id} label={t.label} active={subTab === t.id} onClick={() => setSubTab(t.id)} />)}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><TrendingUp className="w-5 h-5 mr-2 text-violet-500"/> Day-wise Trend (Total Cost vs Cost/MT)</h3>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={filteredData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
+                    <XAxis dataKey="Date" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
+                    <YAxis yAxisId="left" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} tickFormatter={(v) => `৳${v/1000}k`} />
+                    <YAxis yAxisId="right" orientation="right" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
+                    <Tooltip cursor={{fill: '#f1f5f9'}} />
+                    <Legend />
+                    <Bar yAxisId="left" dataKey="Total MOH Cost" name="Total MOH Cost (BDT)" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                    <Line yAxisId="right" type="monotone" dataKey="Cost/MT" name="Cost / MT" stroke="#f43f5e" strokeWidth={3} dot={{r: 3}} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-fuchsia-500"/> Cost Parameters Breakdown</h3>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={paramChartData.slice(0, 8)} layout="vertical" margin={{ left: 100 }}>
+                    <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0"/>
+                    <XAxis type="number" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
+                    <YAxis dataKey="name" type="category" tick={{fill: '#64748b', fontSize: 11}} axisLine={false} tickLine={false} width={150} />
+                    <Tooltip cursor={{fill: '#f1f5f9'}} />
+                    <Bar dataKey="cost" name="MOH Cost (BDT)" fill="#d946ef" radius={[0, 4, 4, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
           </div>
-
-          {/* ══ OVERVIEW sub-tab ══════════════════════════════════════════════ */}
-          {subTab === 'overview' && (
-            <div className="space-y-6">
-
-              {/* Month-over-month line chart */}
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                <h3 className="text-lg font-bold text-slate-800 mb-1 flex items-center">
-                  <TrendingUp className="w-5 h-5 mr-2 text-violet-500" /> Month-over-Month MOH Cost
-                </h3>
-                <p className="text-xs text-slate-400 mb-5">New months auto-appear as data is appended.</p>
-                {mohTrend.length === 0
-                  ? <p className="text-slate-400 text-sm text-center py-10">No monthly data available.</p>
-                  : <div className="h-72">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <AreaChart data={mohTrend} margin={{ left: 10, right: 10, top: 4, bottom: 0 }}>
-                        <defs>
-                          <linearGradient id="mohGrad" x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%"  stopColor="#7c3aed" stopOpacity={0.15}/>
-                            <stop offset="95%" stopColor="#7c3aed" stopOpacity={0}/>
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                        <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
-                        <YAxis tickFormatter={v => fmtBDT(v)} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={65} />
-                        <Tooltip formatter={(v) => [fmtBDTFull(v), 'MOH Cost']} labelStyle={{ fontWeight: 600 }} />
-                        <Area type="monotone" dataKey="cost" name="MOH Cost (BDT)" stroke="#7c3aed" strokeWidth={2.5} fill="url(#mohGrad)" dot={{ r: 4, fill: '#7c3aed', strokeWidth: 2, stroke: '#fff' }} activeDot={{ r: 6 }} />
-                      </AreaChart>
-                    </ResponsiveContainer>
-                  </div>
-                }
-              </div>
-
-              {/* SBU mini-cards */}
-              <div>
-                <h3 className="text-base font-bold text-slate-700 mb-3">
-                  SBU Cost Split {filters.monthYear !== 'All' ? `— ${filters.monthYear}` : '(all months)'}
-                </h3>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {sbuComparison.map((s, i) => (
-                    <div key={s.name}
-                      onClick={() => setFilters(f => ({ ...f, sbu: f.sbu === s.name ? 'All' : s.name }))}
-                      className={`bg-white rounded-xl border p-4 cursor-pointer transition-all hover:shadow-md ${filters.sbu === s.name ? 'border-violet-400 ring-2 ring-violet-100' : 'border-slate-100'}`}>
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xs font-bold text-slate-500">{s.name}</span>
-                        <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: MOH_COLORS[i % MOH_COLORS.length] }} />
-                      </div>
-                      <p className="text-lg font-black text-slate-800">{fmtBDT(s.cost)}</p>
-                      <p className="text-xs text-slate-400 mt-1">
-                        {totalCost > 0 ? ((s.cost / sbuComparison.reduce((a,d)=>a+d.cost,0)) * 100).toFixed(1) : 0}% of selected total
-                      </p>
-                      {/* mini progress bar */}
-                      <div className="mt-2 h-1 w-full bg-slate-100 rounded-full overflow-hidden">
-                        <div className="h-1 rounded-full" style={{
-                          width: `${sbuComparison[0].cost > 0 ? (s.cost / sbuComparison[0].cost) * 100 : 0}%`,
-                          backgroundColor: MOH_COLORS[i % MOH_COLORS.length]
-                        }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
+          
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+            <div className="p-5 border-b border-slate-100 flex justify-between items-center">
+              <h3 className="text-lg font-bold text-slate-800">Day-wise MOH Cost Situations</h3>
             </div>
-          )}
-
-          {/* ══ DAILY TREND sub-tab ══════════════════════════════════════════ */}
-          {subTab === 'daily' && (
-            <div className="space-y-4">
-              {filters.monthYear === 'All'
-                ? <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-800">
-                    Select a specific month from the filter above to see the daily breakdown.
-                  </div>
-                : dailyTrend.length === 0
-                  ? <div className="text-slate-400 text-sm text-center py-10">No daily data for {filters.monthYear}.</div>
-                  : <>
-                  <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                    <h3 className="text-lg font-bold text-slate-800 mb-1 flex items-center">
-                      <Activity className="w-5 h-5 mr-2 text-cyan-500" />
-                      Daily MOH Cost — {filters.monthYear}
-                      {filters.sbu !== 'All' && <span className="ml-2 text-sm font-medium text-slate-400">({filters.sbu})</span>}
-                    </h3>
-                    <p className="text-xs text-slate-400 mb-5">Each bar = total MOH cost logged for that calendar day.</p>
-                    <div className="h-80">
-                      <ResponsiveContainer width="100%" height="100%">
-                        <BarChart data={dailyTrend} margin={{ left: 10, right: 10 }}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                          <XAxis dataKey="label" tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} label={{ value: 'Day of month', position: 'insideBottom', offset: -2, fontSize: 11, fill: '#94a3b8' }} />
-                          <YAxis tickFormatter={v => fmtBDT(v)} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={65} />
-                          <Tooltip formatter={v => [fmtBDTFull(v), 'MOH Cost']} labelFormatter={l => `Day ${l}`} />
-                          <Bar dataKey="cost" name="MOH Cost (BDT)" radius={[4, 4, 0, 0]}>
-                            {dailyTrend.map((entry, i) => {
-                              const avg = dailyTrend.reduce((a,d)=>a+d.cost,0) / dailyTrend.length;
-                              return <Cell key={i} fill={entry.cost > avg * 1.5 ? '#dc2626' : entry.cost < avg * 0.5 ? '#94a3b8' : '#7c3aed'} />;
-                            })}
-                          </Bar>
-                        </BarChart>
-                      </ResponsiveContainer>
-                    </div>
-                    <div className="flex gap-4 mt-3 text-xs text-slate-500">
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-violet-600 inline-block"/>Normal</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-red-600 inline-block"/>High spike (&gt;1.5× avg)</span>
-                      <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-slate-400 inline-block"/>Low day (&lt;0.5× avg)</span>
-                    </div>
-                  </div>
-
-                  {/* Daily detail table */}
-                  <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                    <div className="p-5 border-b border-slate-100">
-                      <h3 className="text-base font-bold text-slate-800">Day-by-Day Log</h3>
-                    </div>
-                    <div className="overflow-x-auto max-h-72">
-                      <table className="w-full text-sm text-left">
-                        <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0">
-                          <tr>
-                            <th className="px-5 py-3">Day</th>
-                            <th className="px-5 py-3">SBU</th>
-                            <th className="px-5 py-3">Category</th>
-                            <th className="px-5 py-3">UOM</th>
-                            <th className="px-5 py-3 text-right">MOH QTY</th>
-                            <th className="px-5 py-3 text-right">MOH Cost (BDT)</th>
-                            <th className="px-5 py-3 text-right">Cost/Unit</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered
-                            .filter(d => d.Day)
-                            .sort((a, b) => a.Day - b.Day || a.SBU.localeCompare(b.SBU))
-                            .map((row, i) => (
-                            <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
-                              <td className="px-5 py-2.5 font-mono font-semibold text-slate-700">{row.Day}</td>
-                              <td className="px-5 py-2.5 font-bold text-slate-800">{row.SBU}</td>
-                              <td className="px-5 py-2.5 text-slate-600">{row.Category}</td>
-                              <td className="px-5 py-2.5 text-slate-400">{row.UOM}</td>
-                              <td className="px-5 py-2.5 text-right font-mono">{row['MOH QTY'].toLocaleString(undefined,{maximumFractionDigits:2})}</td>
-                              <td className="px-5 py-2.5 text-right font-mono font-semibold text-slate-800">{fmtBDTFull(row['MOH Cost'])}</td>
-                              <td className="px-5 py-2.5 text-right font-mono text-slate-500">{row['Cost per Unit'] > 0 ? row['Cost per Unit'].toFixed(3) : '—'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                  </>
-              }
-            </div>
-          )}
-
-          {/* ══ SBU COMPARISON sub-tab ═══════════════════════════════════════ */}
-          {subTab === 'sbu' && (
-            <div className="space-y-6">
-              <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-                <h3 className="text-lg font-bold text-slate-800 mb-5 flex items-center">
-                  <Target className="w-5 h-5 mr-2 text-blue-500" />
-                  SBU Cost Comparison {filters.monthYear !== 'All' ? `— ${filters.monthYear}` : '(all months)'}
-                </h3>
-                <div className="h-80">
-                  <ResponsiveContainer width="100%" height="100%">
-                    <BarChart data={sbuComparison} margin={{ left: 10, right: 20, top: 4 }}>
-                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
-                      <XAxis dataKey="name" tick={{ fill: '#64748b', fontSize: 12 }} axisLine={false} tickLine={false} />
-                      <YAxis tickFormatter={v => fmtBDT(v)} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} width={65} />
-                      <Tooltip formatter={v => [fmtBDTFull(v), 'MOH Cost']} />
-                      <Bar dataKey="cost" name="MOH Cost (BDT)" radius={[6, 6, 0, 0]}>
-                        {sbuComparison.map((_, i) => <Cell key={i} fill={MOH_COLORS[i % MOH_COLORS.length]} />)}
-                      </Bar>
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-
-              {/* SBU x Month matrix table */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                <div className="p-5 border-b border-slate-100">
-                  <h3 className="text-base font-bold text-slate-800">SBU × Month Summary</h3>
-                  <p className="text-xs text-slate-400 mt-1">Totals across all categories. Click an SBU card above to drill down.</p>
-                </div>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm text-left">
-                    <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0">
-                      <tr>
-                        <th className="px-5 py-3">SBU</th>
-                        <th className="px-5 py-3">Month</th>
-                        <th className="px-5 py-3 text-right">Total MOH Cost</th>
-                        <th className="px-5 py-3 text-right">Entries</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sbuMonthlyTable.map((row, i) => (
-                        <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
-                          <td className="px-5 py-3 font-bold text-slate-800">{row.SBU}</td>
-                          <td className="px-5 py-3 text-slate-600">{row.MonthYear}</td>
-                          <td className="px-5 py-3 text-right font-mono font-semibold">{fmtBDTFull(row.cost)}</td>
-                          <td className="px-5 py-3 text-right text-slate-400">{row.entries}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ══ CATEGORY BREAKDOWN sub-tab ═══════════════════════════════════ */}
-          {subTab === 'category' && (
-            <div className="space-y-6">
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-
-                {/* Horizontal bar chart */}
-                <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100 lg:col-span-2">
-                  <h3 className="text-lg font-bold text-slate-800 mb-5 flex items-center">
-                    <Zap className="w-5 h-5 mr-2 text-violet-500" /> Cost by Category
-                  </h3>
-                  <div className="h-96">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <BarChart data={categoryBreakdown.slice(0, 15)} layout="vertical" margin={{ left: 10, right: 60 }}>
-                        <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0" />
-                        <XAxis type="number" tickFormatter={v => fmtBDT(v)} tick={{ fill: '#64748b', fontSize: 11 }} axisLine={false} tickLine={false} />
-                        <YAxis dataKey="name" type="category" tick={{ fill: '#475569', fontSize: 11 }} axisLine={false} tickLine={false} width={180} />
-                        <Tooltip formatter={v => [fmtBDTFull(v), 'MOH Cost']} />
-                        <Bar dataKey="cost" name="MOH Cost (BDT)" radius={[0, 4, 4, 0]}>
-                          {categoryBreakdown.slice(0,15).map((_, i) => <Cell key={i} fill={MOH_COLORS[i % MOH_COLORS.length]} />)}
-                        </Bar>
-                      </BarChart>
-                    </ResponsiveContainer>
-                  </div>
-                </div>
-              </div>
-
-              {/* Category table with % share */}
-              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-                <div className="p-5 border-b border-slate-100">
-                  <h3 className="text-base font-bold text-slate-800">Category Detail</h3>
-                </div>
-                <div className="overflow-x-auto max-h-80">
-                  <table className="w-full text-sm">
-                    <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0">
-                      <tr>
-                        <th className="px-5 py-3 text-left">Rank</th>
-                        <th className="px-5 py-3 text-left">Category</th>
-                        <th className="px-5 py-3 text-right">MOH Cost (BDT)</th>
-                        <th className="px-5 py-3 text-right">Share %</th>
-                        <th className="px-5 py-3">Distribution</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {categoryBreakdown.map((row, i) => (
-                        <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
-                          <td className="px-5 py-2.5 text-slate-400 font-mono text-xs">{String(i + 1).padStart(2, '0')}</td>
-                          <td className="px-5 py-2.5 font-medium text-slate-700">{row.name}</td>
-                          <td className="px-5 py-2.5 text-right font-mono font-semibold text-slate-800">{fmtBDTFull(row.cost)}</td>
-                          <td className="px-5 py-2.5 text-right font-semibold" style={{ color: MOH_COLORS[i % MOH_COLORS.length] }}>{row.pct.toFixed(1)}%</td>
-                          <td className="px-5 py-2.5 w-32">
-                            <div className="h-2 w-full bg-slate-100 rounded-full overflow-hidden">
-                              <div className="h-2 rounded-full transition-all" style={{ width: `${row.pct}%`, backgroundColor: MOH_COLORS[i % MOH_COLORS.length] }} />
-                            </div>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* ══ DATA TABLE sub-tab ═══════════════════════════════════════════ */}
-          {subTab === 'table' && (
-            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-                <div>
-                  <h3 className="text-base font-bold text-slate-800">Raw Entry Log</h3>
-                  <p className="text-xs text-slate-400 mt-1">{filtered.length} rows matching current filters. Sorted by date descending.</p>
-                </div>
-              </div>
-              <div className="overflow-x-auto max-h-[500px]">
-                <table className="w-full text-sm text-left">
-                  <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 z-10">
-                    <tr>
-                      <th className="px-5 py-3 whitespace-nowrap">Date</th>
-                      <th className="px-5 py-3 whitespace-nowrap">SBU</th>
-                      <th className="px-5 py-3 whitespace-nowrap">Month</th>
-                      <th className="px-5 py-3 whitespace-nowrap">Category</th>
-                      <th className="px-5 py-3 whitespace-nowrap">UOM</th>
-                      <th className="px-5 py-3 text-right whitespace-nowrap">MOH QTY</th>
-                      <th className="px-5 py-3 text-right whitespace-nowrap">MOH Cost (BDT)</th>
-                      <th className="px-5 py-3 text-right whitespace-nowrap">Cost/Unit</th>
-                      <th className="px-5 py-3 whitespace-nowrap">Entered By</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...filtered]
-                      .sort((a, b) => (b.DateObj?.getTime() || 0) - (a.DateObj?.getTime() || 0))
-                      .map((row, i) => (
-                      <tr key={i} className={`border-b border-slate-50 hover:bg-slate-50 ${i % 2 === 0 ? '' : 'bg-slate-50/40'}`}>
-                        <td className="px-5 py-2.5 font-mono text-xs text-slate-500 whitespace-nowrap">{row.Date}</td>
-                        <td className="px-5 py-2.5 font-bold text-slate-800 whitespace-nowrap">{row.SBU}</td>
-                        <td className="px-5 py-2.5 text-slate-500 whitespace-nowrap">{row.MonthYear}</td>
-                        <td className="px-5 py-2.5 text-slate-700 whitespace-nowrap">{row.Category}</td>
-                        <td className="px-5 py-2.5 text-slate-400 whitespace-nowrap">{row.UOM}</td>
-                        <td className="px-5 py-2.5 text-right font-mono whitespace-nowrap">{row['MOH QTY'].toLocaleString(undefined,{maximumFractionDigits:2})}</td>
-                        <td className="px-5 py-2.5 text-right font-mono font-semibold text-slate-800 whitespace-nowrap">{fmtBDTFull(row['MOH Cost'])}</td>
-                        <td className="px-5 py-2.5 text-right font-mono text-slate-500 whitespace-nowrap">{row['Cost per Unit'] > 0 ? row['Cost per Unit'].toFixed(3) : '—'}</td>
-                        <td className="px-5 py-2.5 text-slate-400 whitespace-nowrap">{row['Entered By'] || '—'}</td>
-                      </tr>
+            <div className="overflow-x-auto max-h-96">
+              <table className="w-full text-sm text-left text-slate-600">
+                <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-6 py-4 whitespace-nowrap">Date</th>
+                    <th className="px-6 py-4 whitespace-nowrap">SBU</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap">Total MOH Cost</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap">MT</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap">Cost / MT</th>
+                    {allParamKeys.slice(0, 6).map(k => (
+                       <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k}</th>
                     ))}
-                  </tbody>
-                </table>
-              </div>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredData.map((row, idx) => (
+                    <tr key={idx} className="bg-white border-b border-slate-50 hover:bg-slate-50">
+                      <td className="px-6 py-4 font-bold text-slate-800 whitespace-nowrap">{row.Date}</td>
+                      <td className="px-6 py-4 whitespace-nowrap">{row.SBU}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['Total MOH Cost'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap text-rose-600 font-semibold">{row['Cost/MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                      {allParamKeys.slice(0, 6).map(k => (
+                         <td key={k} className="px-6 py-4 text-right font-mono whitespace-nowrap">{(row._rawParams[k] || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          )}
-
-          </>)}
+          </div>
         </div>
       );
     };
@@ -1192,12 +804,12 @@
               fetch(getSheetUrl('RACI Import')),
               fetch(getSheetUrl('IC')),
               fetch(getSheetUrl('PC')),
-              fetch(getSheetUrl('MOH Cost'))
+              fetch(getNewMohUrl('ACCL')) // Fetch from the NEW sheet ID, strictly pulling the 'ACCL' tab
             ]);
 
             const texts = await Promise.all(responses.map(res => res.text()));
 
-            if (texts[0].trim().startsWith('<')) {
+            if (texts[0].trim().startsWith('<') || texts[4].trim().startsWith('<')) {
               throw new Error("Received HTML login page. Ensure Google Sheet sharing is set to 'Anyone with the link'.");
             }
 
@@ -1206,7 +818,7 @@
               raci: parseSmartCSV(texts[1]),
               ic: parseSmartCSV(texts[2]),
               pc: parseSmartCSV(texts[3]),
-              moh: parseMOHCSV(texts[4])
+              moh: parseNewMOHCSV(texts[4])
             });
             setLoading(false);
           } catch (err) {
