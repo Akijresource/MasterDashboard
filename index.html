@@ -144,89 +144,97 @@
       
       const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
       const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
-      if (lines.length === 0) return [];
+      if (lines.length < 4) return []; // Data starts at row 4
       
-      let headerIdx = -1;
-      let monthName = 'Current Month';
+      // Month is at C2 (Row 2, Index 1, Column C, Index 2)
+      const row2Cols = lines[1].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+      const monthName = row2Cols[2] || 'Current Month';
+
+      // Key Headers are at Row 3 (Index 2)
+      const headers = lines[2].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
       
-      // Dynamic Search to find the Headers and Month Name (highly resilient to row shifts)
-      for (let i = 0; i < Math.min(lines.length, 15); i++) {
-        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim().toUpperCase());
+      const sbuIdx = 0; // Column A
+      
+      // Look for Date in headers, fallback to 3 (D) or 1 (B)
+      let dateIdx = headers.findIndex(h => h.toUpperCase() === 'DATE');
+      if (dateIdx === -1) dateIdx = 3; 
+
+      // Look for Parameter
+      let paramIdx = headers.findIndex(h => /PARAMETER|CATEGORY|ELEMENT|PARTICULAR/i.test(h.toUpperCase()));
+      if (paramIdx === -1) paramIdx = 4; // Default Column E
+
+      // Daily inputs are in O(14), P(15), Q(16), and MT/Demand is in R(17)
+      const colO = 14, colP = 15, colQ = 16, colR = 17;
+      
+      // Determine which column is the Cost (defaults to O)
+      let costIdx = colO;
+      if (headers[colQ] && /COST|AMOUNT|BDT/i.test(headers[colQ])) costIdx = colQ;
+      else if (headers[colP] && /COST|AMOUNT|BDT/i.test(headers[colP])) costIdx = colP;
+
+      const dateGroups = {};
+      const fixedParamsMap = {};
+
+      for (let i = 3; i < lines.length; i++) {
+        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+        if (cols.length < 5) continue;
+
+        const sbu = cols[sbuIdx] || 'ACCL';
+        const date = cols[dateIdx];
+        const param = cols[paramIdx];
         
-        // Find month name dynamically from top section
-        const monthLabelIdx = cols.findIndex(c => c.includes('MONTH'));
-        if (monthLabelIdx !== -1 && cols.length > monthLabelIdx + 1) {
-            const rawMonth = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)[monthLabelIdx + 1];
-            if (rawMonth && rawMonth.replace(/^"|"$/g, '').trim() !== '') {
-               monthName = rawMonth.replace(/^"|"$/g, '').trim();
-            }
+        if (!date || date.toUpperCase() === 'DATE' || !param) continue;
+
+        const cost = safeNum(cols[costIdx] || 0);
+        const demandMT = safeNum(cols[colR] || 0);
+
+        // Group by Date to sum up the repetitive 11 parameters
+        if (!dateGroups[date]) {
+          dateGroups[date] = {
+            SBU: sbu,
+            Date: date,
+            Month: monthName,
+            'Total MOH Cost': 0,
+            'MT': demandMT, // Pulled from Column R
+            'Cost/MT': 0,
+            _rawParams: {}
+          };
         }
 
-        if (cols.includes('SBU') && (cols.includes('DATE') || cols.includes('TOTAL MOH COST') || cols.includes('MT'))) {
-          headerIdx = i;
-          break;
+        dateGroups[date]['Total MOH Cost'] += cost;
+        dateGroups[date]._rawParams[param] = cost;
+        
+        // If demand was 0 on first parameter but exists on another, update it
+        if (demandMT > 0) dateGroups[date]['MT'] = demandMT;
+
+        // Capture fixed Budget & Target columns (F to K) just once per parameter
+        if (!fixedParamsMap[param]) {
+          fixedParamsMap[param] = {
+            Parameter: param,
+            F: cols[5] || '',
+            G: cols[6] || '',
+            H: cols[7] || '',
+            I: cols[8] || '',
+            J: cols[9] || '',
+            K: cols[10] || ''
+          };
         }
       }
 
-      // Fallback: If exact match failed, search loosely for TOTAL MOH
-      if (headerIdx === -1) {
-         for (let i = 0; i < Math.min(lines.length, 15); i++) {
-            if (lines[i].toUpperCase().includes('TOTAL MOH')) {
-               headerIdx = i; break;
-            }
-         }
-      }
-      
-      if (headerIdx === -1) return []; 
-
-      const headers = lines[headerIdx].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
-      const data = [];
-      const standardHeaders = ['SBU', 'DATE', 'TOTAL MOH COST', 'MT', 'COST/MT', 'COST / MT'];
-
-      for (let i = headerIdx + 1; i < lines.length; i++) {
-        const values = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-        if (values.join('').trim() === '') continue;
-
-        const obj = {};
-        headers.forEach((h, idx) => {
-          if (h) obj[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
-        });
-
-        // Dynamic Key Extraction
-        const dateKey = Object.keys(obj).find(k => k.toUpperCase() === 'DATE' || k.toUpperCase().includes('DATE'));
-        const costKey = Object.keys(obj).find(k => k.toUpperCase().includes('TOTAL MOH'));
-        const mtKey = Object.keys(obj).find(k => k.toUpperCase() === 'MT');
-        const cpuKey = Object.keys(obj).find(k => k.toUpperCase().includes('COST/MT') || k.toUpperCase().includes('COST / MT'));
-        const sbuKey = Object.keys(obj).find(k => k.toUpperCase() === 'SBU');
-
-        const sbuVal = (sbuKey && obj[sbuKey]) ? obj[sbuKey] : 'ACCL';
-        const dateVal = dateKey ? obj[dateKey] : null;
-        const costVal = costKey ? safeNum(obj[costKey]) : 0;
-        const mtVal = mtKey ? safeNum(obj[mtKey]) : 0;
-        const cpuVal = cpuKey ? safeNum(obj[cpuKey]) : 0;
-
-        // Skip rows that look like summary footers or headers repeating
-        if (dateVal && dateVal.toUpperCase() !== 'DATE' && !dateVal.toUpperCase().includes('TOTAL')) {
-           const rowData = {
-              SBU: sbuVal,
-              Date: dateVal,
-              Month: monthName,
-              'Total MOH Cost': costVal,
-              'MT': mtVal,
-              'Cost/MT': cpuVal,
-              _rawParams: {}
-           };
-
-           // Dynamically pull all 11+ parameters added by the user
-           headers.forEach(h => {
-             if (h && !standardHeaders.includes(h.toUpperCase()) && !h.toUpperCase().includes('REMARK') && !h.toUpperCase().includes('MONTH')) {
-                rowData._rawParams[h] = safeNum(obj[h]);
-             }
-           });
-
-           data.push(rowData);
+      // Finalize Day-wise array
+      const data = Object.values(dateGroups).map(d => {
+        if (d['MT'] > 0) {
+          d['Cost/MT'] = d['Total MOH Cost'] / d['MT'];
         }
-      }
+        return d;
+      });
+
+      // Attach static data to the array object so it can be rendered separately
+      data.fixedHeaders = [
+         headers[5] || 'Budget Col F', headers[6] || 'Budget Col G', headers[7] || 'Target Col H', 
+         headers[8] || 'Target Col I', headers[9] || 'Target Col J', headers[10] || 'Target Col K'
+      ];
+      data.fixedParams = Object.values(fixedParamsMap);
+
       return data;
     };
 
@@ -688,6 +696,10 @@
       const totalMT = filteredData.reduce((a, c) => a + c['MT'], 0);
       const avgCpu = totalMT > 0 ? (totalCost / totalMT) : 0;
 
+      // Extract static variables for the new UI Table
+      const fixedParams = rawData.fixedParams || [];
+      const fixedHeaders = rawData.fixedHeaders || [];
+
       // Aggregate all 11+ parameters to find the top cost drivers
       const paramTotals = {};
       filteredData.forEach(row => {
@@ -721,13 +733,45 @@
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <KPICard title="Total MOH Cost" value={`৳${totalCost.toLocaleString(undefined, {maximumFractionDigits: 0})}`} icon={Zap} colorClass="bg-violet-600" />
             <KPICard title="Avg Cost / MT" value={`৳${avgCpu.toFixed(2)}`} icon={Activity} colorClass="bg-fuchsia-500" />
-            <KPICard title="Total MT (Production)" value={totalMT.toLocaleString(undefined, {maximumFractionDigits: 2})} icon={Target} colorClass="bg-indigo-500" />
+            <KPICard title="Total MT (Demand)" value={totalMT.toLocaleString(undefined, {maximumFractionDigits: 2})} icon={Target} colorClass="bg-indigo-500" />
             <KPICard title="Top Cost Driver" value={topParam ? topParam.name : 'N/A'} subtext={topParam ? `৳${topParam.cost.toLocaleString(undefined, {maximumFractionDigits: 0})}` : ''} icon={TrendingUp} colorClass="bg-rose-500" />
           </div>
 
           <AIInsightCard insights={aiInsights} />
 
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {/* NEW STATIC TABLE: Fixed Budget & Target Columns */}
+          {fixedParams.length > 0 && (
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-blue-50">
+                <h3 className="text-lg font-bold text-blue-900">Monthly Budget & Target Overviews (Fixed Metrics)</h3>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm text-left text-slate-600">
+                  <thead className="text-xs text-blue-700 uppercase bg-blue-50/50 sticky top-0 z-10">
+                    <tr>
+                      <th className="px-6 py-4 whitespace-nowrap">Parameter</th>
+                      {fixedHeaders.map((h, i) => <th key={i} className="px-6 py-4 whitespace-nowrap">{h}</th>)}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {fixedParams.map((row, idx) => (
+                      <tr key={idx} className="bg-white border-b border-slate-50 hover:bg-slate-50">
+                        <td className="px-6 py-4 font-bold text-slate-800 whitespace-nowrap">{row.Parameter}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.F}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.G}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.H}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.I}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.J}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.K}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
               <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><TrendingUp className="w-5 h-5 mr-2 text-violet-500"/> Day-wise Trend (Total Cost vs Cost/MT)</h3>
               <div className="h-80">
@@ -747,7 +791,7 @@
             </div>
 
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-fuchsia-500"/> Daily Production Volume (MT)</h3>
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-fuchsia-500"/> Daily Demand / Volume (MT)</h3>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={filteredData}>
@@ -792,9 +836,10 @@
             </div>
           </div>
           
+          {/* DYNAMIC DAY-WISE TREND TABLE */}
           <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center">
-              <h3 className="text-lg font-bold text-slate-800">Day-wise MOH Cost Situations</h3>
+              <h3 className="text-lg font-bold text-slate-800">Day-wise Daily Cost Situations</h3>
             </div>
             <div className="overflow-x-auto max-h-96">
               <table className="w-full text-sm text-left text-slate-600">
@@ -803,7 +848,7 @@
                     <th className="px-6 py-4 whitespace-nowrap">Date</th>
                     <th className="px-6 py-4 whitespace-nowrap">SBU</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap">Total MOH Cost</th>
-                    <th className="px-6 py-4 text-right whitespace-nowrap">MT</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap">MT (Demand)</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap">Cost / MT</th>
                     {allParamKeys.map(k => (
                        <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k}</th>
