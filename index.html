@@ -153,23 +153,21 @@
       // Key Headers are at Row 3 (Index 2)
       const headers = lines[2].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
       
+      // Exact User Mappings
       const sbuIdx = 0; // Column A
+      const dateIdx = 2; // Column C
+      const paramIdx = 3; // Column D (Transaction name)
+      const uomIdx = 4; // Column E (UOM)
+      const mtIdx = 17; // Column R (Demand / MT)
       
-      // Look for Date in headers, fallback to 3 (D) or 1 (B)
-      let dateIdx = headers.findIndex(h => h.toUpperCase() === 'DATE');
-      if (dateIdx === -1) dateIdx = 3; 
-
-      // Look for Parameter
-      let paramIdx = headers.findIndex(h => /PARAMETER|CATEGORY|ELEMENT|PARTICULAR/i.test(h.toUpperCase()));
-      if (paramIdx === -1) paramIdx = 4; // Default Column E
-
-      // Daily inputs are in O(14), P(15), Q(16), and MT/Demand is in R(17)
-      const colO = 14, colP = 15, colQ = 16, colR = 17;
+      // Variables O, P, Q
+      const colO = 14, colP = 15, colQ = 16;
       
-      // Determine which column is the Cost (defaults to O)
-      let costIdx = colO;
-      if (headers[colQ] && /COST|AMOUNT|BDT/i.test(headers[colQ])) costIdx = colQ;
-      else if (headers[colP] && /COST|AMOUNT|BDT/i.test(headers[colP])) costIdx = colP;
+      // Determine main Cost KPI from O, P, Q
+      let costIdx = colQ;
+      if (headers[colQ] && /ACTUAL|TOTAL|COST|BDT/i.test(headers[colQ])) costIdx = colQ;
+      else if (headers[colP] && /ACTUAL|TOTAL|COST|BDT/i.test(headers[colP])) costIdx = colP;
+      else if (headers[colO] && /ACTUAL|TOTAL|COST|BDT/i.test(headers[colO])) costIdx = colO;
 
       const dateGroups = {};
       const fixedParamsMap = {};
@@ -185,7 +183,10 @@
         if (!date || date.toUpperCase() === 'DATE' || !param) continue;
 
         const cost = safeNum(cols[costIdx] || 0);
-        const demandMT = safeNum(cols[colR] || 0);
+        const demandMT = safeNum(cols[mtIdx] || 0);
+        const valO = safeNum(cols[colO] || 0);
+        const valP = safeNum(cols[colP] || 0);
+        const valQ = safeNum(cols[colQ] || 0);
 
         // Group by Date to sum up the repetitive 11 parameters
         if (!dateGroups[date]) {
@@ -194,22 +195,29 @@
             Date: date,
             Month: monthName,
             'Total MOH Cost': 0,
-            'MT': demandMT, // Pulled from Column R
+            'MT': 0, // Assigned later if > 0
             'Cost/MT': 0,
+            'ValO': 0,
+            'ValP': 0,
+            'ValQ': 0,
             _rawParams: {}
           };
         }
 
         dateGroups[date]['Total MOH Cost'] += cost;
+        dateGroups[date]['ValO'] += valO;
+        dateGroups[date]['ValP'] += valP;
+        dateGroups[date]['ValQ'] += valQ;
         dateGroups[date]._rawParams[param] = cost;
         
         // If demand was 0 on first parameter but exists on another, update it
         if (demandMT > 0) dateGroups[date]['MT'] = demandMT;
 
-        // Capture fixed Budget & Target columns (F to K) just once per parameter
+        // Capture fixed Budget & Target columns (F to K) and UOM (E) just once per parameter
         if (!fixedParamsMap[param]) {
           fixedParamsMap[param] = {
             Parameter: param,
+            UOM: cols[uomIdx] || '',
             F: cols[5] || '',
             G: cols[6] || '',
             H: cols[7] || '',
@@ -228,10 +236,16 @@
         return d;
       });
 
-      // Attach static data to the array object so it can be rendered separately
+      // Attach static headers mapping to the array object so it can be rendered dynamically
       data.fixedHeaders = [
+         headers[uomIdx] || 'UOM',
          headers[5] || 'Budget Col F', headers[6] || 'Budget Col G', headers[7] || 'Target Col H', 
          headers[8] || 'Target Col I', headers[9] || 'Target Col J', headers[10] || 'Target Col K'
+      ];
+      data.headersOPQ = [
+         headers[colO] || 'Col O Input',
+         headers[colP] || 'Col P Input',
+         headers[colQ] || 'Col Q Input'
       ];
       data.fixedParams = Object.values(fixedParamsMap);
 
@@ -696,9 +710,10 @@
       const totalMT = filteredData.reduce((a, c) => a + c['MT'], 0);
       const avgCpu = totalMT > 0 ? (totalCost / totalMT) : 0;
 
-      // Extract static variables for the new UI Table
+      // Extract static variables for the new UI Tables
       const fixedParams = rawData.fixedParams || [];
       const fixedHeaders = rawData.fixedHeaders || [];
+      const headersOPQ = rawData.headersOPQ || ['Input O', 'Input P', 'Input Q'];
 
       // Aggregate all 11+ parameters to find the top cost drivers
       const paramTotals = {};
@@ -750,13 +765,20 @@
                   <thead className="text-xs text-blue-700 uppercase bg-blue-50/50 sticky top-0 z-10">
                     <tr>
                       <th className="px-6 py-4 whitespace-nowrap">Parameter</th>
-                      {fixedHeaders.map((h, i) => <th key={i} className="px-6 py-4 whitespace-nowrap">{h}</th>)}
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[0]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[1]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[2]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[3]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[4]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[5]}</th>
+                      <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[6]}</th>
                     </tr>
                   </thead>
                   <tbody>
                     {fixedParams.map((row, idx) => (
                       <tr key={idx} className="bg-white border-b border-slate-50 hover:bg-slate-50">
                         <td className="px-6 py-4 font-bold text-slate-800 whitespace-nowrap">{row.Parameter}</td>
+                        <td className="px-6 py-4 whitespace-nowrap font-mono">{row.UOM}</td>
                         <td className="px-6 py-4 whitespace-nowrap font-mono">{row.F}</td>
                         <td className="px-6 py-4 whitespace-nowrap font-mono">{row.G}</td>
                         <td className="px-6 py-4 whitespace-nowrap font-mono">{row.H}</td>
@@ -847,9 +869,11 @@
                   <tr>
                     <th className="px-6 py-4 whitespace-nowrap">Date</th>
                     <th className="px-6 py-4 whitespace-nowrap">SBU</th>
-                    <th className="px-6 py-4 text-right whitespace-nowrap">Total MOH Cost</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap">MT (Demand)</th>
-                    <th className="px-6 py-4 text-right whitespace-nowrap">Cost / MT</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[0]}</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[1]}</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[2]}</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap font-bold text-rose-600">Cost / MT</th>
                     {allParamKeys.map(k => (
                        <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k}</th>
                     ))}
@@ -860,9 +884,11 @@
                     <tr key={idx} className="bg-white border-b border-slate-50 hover:bg-slate-50">
                       <td className="px-6 py-4 font-bold text-slate-800 whitespace-nowrap">{row.Date}</td>
                       <td className="px-6 py-4 whitespace-nowrap">{row.SBU}</td>
-                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['Total MOH Cost'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                       <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
-                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap text-rose-600 font-semibold">{row['Cost/MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['ValO'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['ValP'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['ValQ'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
+                      <td className="px-6 py-4 text-right font-mono whitespace-nowrap text-rose-600 font-bold">{row['Cost/MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                       {allParamKeys.map(k => (
                          <td key={k} className="px-6 py-4 text-right font-mono whitespace-nowrap">{(row._rawParams[k] || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                       ))}
