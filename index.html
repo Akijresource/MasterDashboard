@@ -79,11 +79,9 @@
     };
 
     const getVal = (row, exactMatches, fuzzyMatch) => {
-      // 1. Check for exact exact match first (case sensitive usually, but we check loosely)
       for (const exact of exactMatches) {
         if (row[exact] !== undefined && row[exact] !== '') return row[exact];
       }
-      // 2. Fallback to fuzzy match if exact match fails
       const key = Object.keys(row).find(k => k.toUpperCase().includes(fuzzyMatch.toUpperCase()));
       return key ? row[key] : null;
     };
@@ -94,12 +92,10 @@
     const parseSmartCSV = (csvStr) => {
       if (!csvStr) return [];
       
-      // FIX: Replace newlines inside quotes with spaces so the line splitter doesn't break
       const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
       const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
       if (lines.length === 0) return [];
       
-      // Auto-detect header row (searches first 10 rows for known headers)
       let headerIdx = 0; 
       for (let i = 0; i < Math.min(lines.length, 10); i++) {
         const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim().toUpperCase());
@@ -126,7 +122,6 @@
           }
         });
         
-        // Standardize Keys for consistent filtering
         const kSbu = Object.keys(obj).find(k => k.toUpperCase().includes('SBU'));
         if (kSbu && !obj['SBU']) obj['SBU'] = obj[kSbu];
 
@@ -136,7 +131,7 @@
         const kSec = Object.keys(obj).find(k => k.toUpperCase() === 'SECTION' || k.toUpperCase() === 'DEPARTMENT');
         if (kSec && !obj['Section']) obj['Section'] = obj[kSec];
         
-        if (hasData && obj['SBU']) { // Make sure it at least grabbed an SBU
+        if (hasData && obj['SBU']) { 
           data.push(obj);
         }
       }
@@ -147,24 +142,42 @@
     const parseNewMOHCSV = (csvStr) => {
       if (!csvStr) return [];
       
-      // Fix embedded newlines
       const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
       const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
-      if (lines.length < 3) return [];
+      if (lines.length === 0) return [];
       
-      // Extract Month from C2 (Row index 1, Col index 2 usually)
-      const row2Cols = lines[1].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
-      let monthName = row2Cols.length > 2 ? row2Cols[2] : '';
-      if (!monthName) monthName = row2Cols.find(c => c.length > 2) || 'Current Month'; 
+      let headerIdx = -1;
+      let monthName = 'Current Month';
+      
+      // Dynamic Search to find the Headers and Month Name (highly resilient to row shifts)
+      for (let i = 0; i < Math.min(lines.length, 15); i++) {
+        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim().toUpperCase());
+        
+        // Find month name dynamically from top section
+        const monthLabelIdx = cols.findIndex(c => c.includes('MONTH'));
+        if (monthLabelIdx !== -1 && cols.length > monthLabelIdx + 1) {
+            const rawMonth = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)[monthLabelIdx + 1];
+            if (rawMonth && rawMonth.replace(/^"|"$/g, '').trim() !== '') {
+               monthName = rawMonth.replace(/^"|"$/g, '').trim();
+            }
+        }
 
-      // Find Header Row dynamically (Row 3 usually)
-      let headerIdx = 2;
-      for (let i = 0; i < Math.min(lines.length, 10); i++) {
-        if (lines[i].toUpperCase().includes('TOTAL MOH')) {
+        if (cols.includes('SBU') && (cols.includes('DATE') || cols.includes('TOTAL MOH COST') || cols.includes('MT'))) {
           headerIdx = i;
           break;
         }
       }
+
+      // Fallback: If exact match failed, search loosely for TOTAL MOH
+      if (headerIdx === -1) {
+         for (let i = 0; i < Math.min(lines.length, 15); i++) {
+            if (lines[i].toUpperCase().includes('TOTAL MOH')) {
+               headerIdx = i; break;
+            }
+         }
+      }
+      
+      if (headerIdx === -1) return []; 
 
       const headers = lines[headerIdx].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
       const data = [];
@@ -179,21 +192,21 @@
           if (h) obj[h] = (values[idx] || '').replace(/^"|"$/g, '').trim();
         });
 
-        // Dynamic Key finders
-        const dateKey = Object.keys(obj).find(k => k.toUpperCase().includes('DATE')) || 'Date';
-        const costKey = Object.keys(obj).find(k => k.toUpperCase().includes('TOTAL MOH')) || 'Total MOH Cost';
-        const mtKey = Object.keys(obj).find(k => k.toUpperCase() === 'MT') || 'MT';
-        const cpuKey = Object.keys(obj).find(k => k.toUpperCase().includes('COST/MT') || k.toUpperCase().includes('COST / MT')) || 'Cost/MT';
-        const sbuKey = Object.keys(obj).find(k => k.toUpperCase().includes('SBU')) || 'SBU';
+        // Dynamic Key Extraction
+        const dateKey = Object.keys(obj).find(k => k.toUpperCase() === 'DATE' || k.toUpperCase().includes('DATE'));
+        const costKey = Object.keys(obj).find(k => k.toUpperCase().includes('TOTAL MOH'));
+        const mtKey = Object.keys(obj).find(k => k.toUpperCase() === 'MT');
+        const cpuKey = Object.keys(obj).find(k => k.toUpperCase().includes('COST/MT') || k.toUpperCase().includes('COST / MT'));
+        const sbuKey = Object.keys(obj).find(k => k.toUpperCase() === 'SBU');
 
-        const sbuVal = obj[sbuKey] || 'ACCL'; // Default to ACCL if left blank
-        const dateVal = obj[dateKey];
-        const costVal = safeNum(obj[costKey]);
-        const mtVal = safeNum(obj[mtKey]);
-        const cpuVal = safeNum(obj[cpuKey]);
+        const sbuVal = (sbuKey && obj[sbuKey]) ? obj[sbuKey] : 'ACCL';
+        const dateVal = dateKey ? obj[dateKey] : null;
+        const costVal = costKey ? safeNum(obj[costKey]) : 0;
+        const mtVal = mtKey ? safeNum(obj[mtKey]) : 0;
+        const cpuVal = cpuKey ? safeNum(obj[cpuKey]) : 0;
 
-        // Push valid data rows
-        if (dateVal && (costVal > 0 || mtVal > 0)) {
+        // Skip rows that look like summary footers or headers repeating
+        if (dateVal && dateVal.toUpperCase() !== 'DATE' && !dateVal.toUpperCase().includes('TOTAL')) {
            const rowData = {
               SBU: sbuVal,
               Date: dateVal,
@@ -204,7 +217,7 @@
               _rawParams: {}
            };
 
-           // Extract all the variable parameter costs dynamically (ignoring standards)
+           // Dynamically pull all 11+ parameters added by the user
            headers.forEach(h => {
              if (h && !standardHeaders.includes(h.toUpperCase()) && !h.toUpperCase().includes('REMARK') && !h.toUpperCase().includes('MONTH')) {
                 rowData._rawParams[h] = safeNum(obj[h]);
@@ -270,7 +283,6 @@
     const SectionOEE = ({ rawData }) => {
       const [filters, setFilters] = useState({ sbu: 'All', month: 'All', section: 'All' });
 
-      // Dynamic Cascading Filters
       const sbus = [...new Set(rawData.map(d => d.SBU))].filter(Boolean);
       const months = [...new Set(rawData.filter(d => filters.sbu === 'All' || d.SBU === filters.sbu).map(d => d.Month))].filter(Boolean);
       const sections = [...new Set(rawData.filter(d => 
@@ -695,8 +707,8 @@
       if (topParam) aiInsights.push(`The top expenditure parameter is "${topParam.name}" accounting for BDT ${topParam.cost.toLocaleString(undefined, {maximumFractionDigits: 0})}. Focus overhead optimization here.`);
       if (avgCpu > 0) aiInsights.push(`Month-to-date Average Cost per MT is BDT ${avgCpu.toFixed(2)}.`);
 
-      // Prepare dynamic table headers for parameters (showing top 5 parameters in the table to avoid scrolling clutter)
       const allParamKeys = paramChartData.map(p => p.name);
+      const CHART_COLORS = ['#8b5cf6', '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#0ea5e9', '#3b82f6', '#6366f1'];
 
       return (
         <div className="space-y-6">
@@ -735,22 +747,52 @@
             </div>
 
             <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
-              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-fuchsia-500"/> Cost Parameters Breakdown</h3>
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-fuchsia-500"/> Daily Production Volume (MT)</h3>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={filteredData}>
+                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0"/>
+                    <XAxis dataKey="Date" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
+                    <YAxis tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
+                    <Tooltip cursor={{fill: '#f1f5f9'}} formatter={(value) => `${value.toLocaleString()} MT`} />
+                    <Area type="monotone" dataKey="MT" stroke="#0ea5e9" fillOpacity={0.3} fill="#0ea5e9" />
+                  </AreaChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+            
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-rose-500"/> Cost Distribution Share</h3>
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie data={paramChartData} dataKey="cost" nameKey="name" cx="50%" cy="50%" outerRadius={100} label>
+                      {paramChartData.map((entry, index) => <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
+                    </Pie>
+                    <Tooltip formatter={(value) => `৳${value.toLocaleString()}`} />
+                    <Legend verticalAlign="bottom" height={36}/>
+                  </PieChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+              <h3 className="text-lg font-bold text-slate-800 mb-6 flex items-center"><Activity className="w-5 h-5 mr-2 text-indigo-500"/> Cost Parameters Breakdown (Top)</h3>
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={paramChartData.slice(0, 8)} layout="vertical" margin={{ left: 100 }}>
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0"/>
                     <XAxis type="number" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
                     <YAxis dataKey="name" type="category" tick={{fill: '#64748b', fontSize: 11}} axisLine={false} tickLine={false} width={150} />
-                    <Tooltip cursor={{fill: '#f1f5f9'}} />
-                    <Bar dataKey="cost" name="MOH Cost (BDT)" fill="#d946ef" radius={[0, 4, 4, 0]} />
+                    <Tooltip cursor={{fill: '#f1f5f9'}} formatter={(value) => `৳${value.toLocaleString()}`} />
+                    <Bar dataKey="cost" name="MOH Cost (BDT)" fill="#22c55e" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
               </div>
             </div>
           </div>
           
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
             <div className="p-5 border-b border-slate-100 flex justify-between items-center">
               <h3 className="text-lg font-bold text-slate-800">Day-wise MOH Cost Situations</h3>
             </div>
@@ -763,7 +805,7 @@
                     <th className="px-6 py-4 text-right whitespace-nowrap">Total MOH Cost</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap">MT</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap">Cost / MT</th>
-                    {allParamKeys.slice(0, 6).map(k => (
+                    {allParamKeys.map(k => (
                        <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k}</th>
                     ))}
                   </tr>
@@ -776,7 +818,7 @@
                       <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['Total MOH Cost'].toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                       <td className="px-6 py-4 text-right font-mono whitespace-nowrap">{row['MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
                       <td className="px-6 py-4 text-right font-mono whitespace-nowrap text-rose-600 font-semibold">{row['Cost/MT'].toLocaleString(undefined, {maximumFractionDigits: 2})}</td>
-                      {allParamKeys.slice(0, 6).map(k => (
+                      {allParamKeys.map(k => (
                          <td key={k} className="px-6 py-4 text-right font-mono whitespace-nowrap">{(row._rawParams[k] || 0).toLocaleString(undefined, {maximumFractionDigits: 0})}</td>
                       ))}
                     </tr>
