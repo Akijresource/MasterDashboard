@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>DCOO Master Dashboard</title>
   
-  <!-- CDNs for React, ReactDOM, Babel, Tailwind, and Recharts -->
   <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
   <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
@@ -56,7 +55,7 @@
 
     // --- HELPER FUNCTIONS ---
     const safeNum = (val) => {
-      if (val == null) return 0;
+      if (val == null || val === '') return 0;
       const strVal = val.toString().trim();
       if (strVal === '#DIV/0!' || strVal === '#REF!' || strVal === '#N/A' || strVal === '#VALUE!') return 0;
       const num = parseFloat(strVal.replace(/,/g, ''));
@@ -64,7 +63,7 @@
     };
 
     const formatPercent = (val) => {
-      if (val == null) return 0;
+      if (val == null || val === '') return 0;
       const strVal = val.toString().trim();
       if (strVal.includes('%')) return parseFloat(strVal.replace('%', ''));
       const num = parseFloat(strVal);
@@ -86,37 +85,78 @@
       return key ? row[key] : null;
     };
 
-    // --- SMART CSV PARSERS ---
+    // --- COMPLETELY NEW ROBUST CSV PARSER ---
+    // This state-machine parser guarantees NO catastrophic regex backtracking.
+    const parseCSVRobust = (csvText) => {
+      if (!csvText) return [];
+      const rows = [];
+      let currentRow = [];
+      let currentVal = '';
+      let inQuotes = false;
+
+      for (let i = 0; i < csvText.length; i++) {
+        let char = csvText[i];
+        let nextChar = csvText[i + 1];
+
+        if (inQuotes) {
+          if (char === '"' && nextChar === '"') {
+            currentVal += '"';
+            i++; // skip escaped quote
+          } else if (char === '"') {
+            inQuotes = false;
+          } else {
+            currentVal += char;
+          }
+        } else {
+          if (char === '"') {
+            inQuotes = true;
+          } else if (char === ',') {
+            currentRow.push(currentVal.trim());
+            currentVal = '';
+          } else if (char === '\n' || char === '\r') {
+            if (char === '\r' && nextChar === '\n') i++; // CRLF
+            currentRow.push(currentVal.trim());
+            rows.push(currentRow);
+            currentRow = [];
+            currentVal = '';
+          } else {
+            currentVal += char;
+          }
+        }
+      }
+      
+      if (currentVal !== '' || currentRow.length > 0) {
+         currentRow.push(currentVal.trim());
+         rows.push(currentRow);
+      }
+      return rows.filter(row => row.some(val => val !== ''));
+    };
     
     // 1. Standard Parser (For OEE, RACI, IC, PC)
     const parseSmartCSV = (csvStr) => {
-      if (!csvStr) return [];
-      
-      const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
-      const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
-      if (lines.length === 0) return [];
+      const rows = parseCSVRobust(csvStr);
+      if (rows.length === 0) return [];
       
       let headerIdx = 0; 
-      for (let i = 0; i < Math.min(lines.length, 10); i++) {
-        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim().toUpperCase());
+      for (let i = 0; i < Math.min(rows.length, 10); i++) {
+        const cols = rows[i].map(c => c.toUpperCase());
         if (cols.some(c => c.includes('SBU') || c.includes('PROJECT') || c.includes('CARD') || c.includes('OEE') || c.includes('MONTH'))) {
           headerIdx = i;
           break;
         }
       }
       
-      const headers = lines[headerIdx].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
+      const headers = rows[headerIdx];
       const data = [];
       
-      for (let i = headerIdx + 1; i < lines.length; i++) {
-        const values = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/);
-        if (values.join('').trim() === '') continue;
-        
+      for (let i = headerIdx + 1; i < rows.length; i++) {
+        const values = rows[i];
         const obj = {};
         let hasData = false;
+
         headers.forEach((h, idx) => {
           if (h) {
-            const val = (values[idx] || '').replace(/^"|"$/g, '').trim();
+            const val = values[idx] || '';
             obj[h] = val;
             if (val) hasData = true;
           }
@@ -140,51 +180,33 @@
 
     // 2. New Flat Table Parser (Specifically built for the NEW structured MOH COST Sheet)
     const parseNewMOHCSV = (csvStr) => {
-      if (!csvStr) return [];
+      const rows = parseCSVRobust(csvStr);
+      if (rows.length < 4) return []; 
       
-      const cleanCSV = csvStr.replace(/"([^"]*)"/g, (match, p1) => `"${p1.replace(/\r?\n/g, ' ')}"`);
-      const lines = cleanCSV.trim().split('\n').filter(line => line.trim() !== '');
-      if (lines.length === 0) return [];
-      
-      let headerIdx = -1;
-      let monthName = 'Current Month';
-      
-      // Dynamic Search to find the Headers and Month Name precisely
-      for (let i = 0; i < Math.min(lines.length, 15); i++) {
-        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim().toUpperCase());
-        
-        const monthLabelIdx = cols.findIndex(c => c === 'MONTH');
-        if (monthLabelIdx !== -1 && cols.length > monthLabelIdx + 1) {
-            const rawMonth = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/)[monthLabelIdx + 1];
-            if (rawMonth && rawMonth.replace(/^"|"$/g, '').trim() !== '') {
-               monthName = rawMonth.replace(/^"|"$/g, '').trim();
-            }
-        }
+      // Month is at C2 (Row 2, Index 2)
+      const monthName = rows[1][2] || 'Current Month';
 
-        // Strictly locate the header row using the unique 'TRANSACTION NAME'
-        if (cols.includes('TRANSACTION NAME') || cols.includes('UOM')) {
-          headerIdx = i;
-          break;
-        }
-      }
-
-      if (headerIdx === -1) return []; 
-
-      const headers = lines[headerIdx].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(h => h.replace(/^"|"$/g, '').trim());
-      const data = [];
+      // Key Headers are at Row 3 (Index 2)
+      const headers = rows[2];
       
-      const sbuIdx = 0; // Col A
-      const dateIdx = 2; // Col C
-      const paramIdx = 3; // Col D
-      const uomIdx = 4; // Col E
+      // Exact User Mappings
+      const sbuIdx = 0; // Column A
+      const dateIdx = 2; // Column C
+      const paramIdx = 3; // Column D (Transaction name)
+      const uomIdx = 4; // Column E (UOM)
+      const mtIdx = 17; // Column R (Demand / MT)
       
-      const colO = 14, colP = 15, colQ = 16, colR = 17;
+      // Variables O, P, Q
+      const colO = 14, colP = 15, colQ = 16;
+      
+      // Determine main Cost KPI from P exactly
+      const costIdx = colP; 
 
       const dateGroups = {};
       const fixedParamsMap = {};
 
-      for (let i = headerIdx + 1; i < lines.length; i++) {
-        const cols = lines[i].split(/,(?=(?:(?:[^"]*"){2})*[^"]*$)/).map(c => c.replace(/^"|"$/g, '').trim());
+      for (let i = 3; i < rows.length; i++) {
+        const cols = rows[i];
         if (cols.length < 5) continue;
 
         const sbu = cols[sbuIdx] || 'ACCL';
@@ -193,33 +215,38 @@
         
         if (!date || date.toUpperCase() === 'DATE' || !param) continue;
 
-        const valO = safeNum(cols[colO] || 0); // QTY
-        const valP = safeNum(cols[colP] || 0); // COST
-        const valQ = safeNum(cols[colQ] || 0); // COST/MT (Not summed, used for reference)
-        const demandMT = safeNum(cols[colR] || 0); // DEMAND
+        const cost = safeNum(cols[costIdx] || 0); // Always pulls from P
+        const demandMT = safeNum(cols[mtIdx] || 0);
+        const valO = safeNum(cols[colO] || 0);
+        const valP = safeNum(cols[colP] || 0);
+        const valQ = safeNum(cols[colQ] || 0);
 
+        // Group by Date to sum up the repetitive 11 parameters
         if (!dateGroups[date]) {
           dateGroups[date] = {
             SBU: sbu,
             Date: date,
             Month: monthName,
+            'Total MOH Cost': 0,
+            'MT': 0, // Assigned later if > 0
+            'Cost/MT': 0,
             'ValO': 0,
-            'Total MOH Cost': 0, // Sum of Col P
-            'MT': 0, // From Col R
-            'Cost/MT': 0, // Mathematically calculated later
+            'ValP': 0,
+            'ValQ': 0,
             _rawParams: {}
           };
         }
 
+        dateGroups[date]['Total MOH Cost'] += cost; // Sum of P
         dateGroups[date]['ValO'] += valO;
-        dateGroups[date]['Total MOH Cost'] += valP;
+        dateGroups[date]['ValP'] += valP;
+        dateGroups[date]['ValQ'] += valQ;
+        dateGroups[date]._rawParams[param] = cost;
         
-        // Dynamically store the specific cost for this parameter for the day-wise breakdown
-        dateGroups[date]._rawParams[param] = valP; 
-        
+        // Ensure demandMT updates if found
         if (demandMT > 0) dateGroups[date]['MT'] = demandMT;
 
-        // Capture static data (F to K) once per parameter
+        // Capture fixed Budget & Target columns (F to K) and UOM (E) just once per parameter
         if (!fixedParamsMap[param]) {
           fixedParamsMap[param] = {
             Parameter: param,
@@ -234,28 +261,28 @@
         }
       }
 
-      const dataArr = Object.values(dateGroups).map(d => {
-        // True Cost/MT = Total Cost (Sum Col P) / Daily Demand (Col R)
+      // Finalize Day-wise array with accurate Math
+      const data = Object.values(dateGroups).map(d => {
         if (d['MT'] > 0) {
-          d['Cost/MT'] = d['Total MOH Cost'] / d['MT'];
+          d['Cost/MT'] = d['Total MOH Cost'] / d['MT']; // Accurate Cost/MT (Sum of P / Demand)
         }
         return d;
       });
 
-      // Attach raw header names precisely as they appear in Row 3
-      dataArr.fixedHeaders = [
+      // Attach dynamic headers
+      data.fixedHeaders = [
          headers[uomIdx] || 'UOM',
-         headers[5] || 'BUDGET QTY', headers[6] || 'MOH COST (BUDGET)', headers[7] || 'COST/MT (BUDGET)', 
-         headers[8] || 'DEMAND TARGET', headers[9] || 'MOH COST (TARGET)', headers[10] || 'COST/MT (TARGET)'
+         headers[5] || 'Budget Col F', headers[6] || 'Budget Col G', headers[7] || 'Target Col H', 
+         headers[8] || 'Target Col I', headers[9] || 'Target Col J', headers[10] || 'Target Col K'
       ];
-      dataArr.headersOPQ = [
-         headers[colO] || 'DAILY QTY',
-         headers[colP] || 'DAILY COST (BDT)',
-         headers[colQ] || 'DAILY COST/MT'
+      data.headersOPQ = [
+         headers[colO] || 'Col O Input',
+         headers[colP] || 'Col P Input',
+         headers[colQ] || 'Col Q Input'
       ];
-      dataArr.fixedParams = Object.values(fixedParamsMap);
+      data.fixedParams = Object.values(fixedParamsMap);
 
-      return dataArr;
+      return data;
     };
 
     // --- SHARED COMPONENTS ---
@@ -737,7 +764,7 @@
       if (avgCpu > 0) aiInsights.push(`Month-to-date Average Cost per MT is BDT ${avgCpu.toFixed(2)}.`);
 
       const allParamKeys = paramChartData.map(p => p.name);
-      const CHART_COLORS = ['#8b5cf6', '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#0ea5e9', '#3b82f6', '#6366f1', '#14b8a6', '#f472b6'];
+      const CHART_COLORS = ['#8b5cf6', '#d946ef', '#f43f5e', '#f97316', '#eab308', '#22c55e', '#0ea5e9', '#3b82f6', '#6366f1'];
 
       return (
         <div className="space-y-6">
@@ -758,14 +785,14 @@
 
           {fixedParams.length > 0 && (
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden mt-6">
-              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-blue-50/50">
+              <div className="p-5 border-b border-slate-100 flex justify-between items-center bg-blue-50">
                 <h3 className="text-lg font-bold text-blue-900">Monthly Budget & Target Overviews (Fixed Metrics)</h3>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-sm text-left text-slate-600">
                   <thead className="text-xs text-blue-700 uppercase bg-blue-50/50 sticky top-0 z-10">
                     <tr>
-                      <th className="px-6 py-4 whitespace-nowrap">PARAMETER</th>
+                      <th className="px-6 py-4 whitespace-nowrap">Parameter</th>
                       <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[0]}</th>
                       <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[1]}</th>
                       <th className="px-6 py-4 whitespace-nowrap">{fixedHeaders[2]}</th>
@@ -805,7 +832,7 @@
                     <YAxis yAxisId="left" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} tickFormatter={(v) => `৳${v/1000}k`} />
                     <YAxis yAxisId="right" orientation="right" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
                     <Tooltip cursor={{fill: '#f1f5f9'}} />
-                    <Legend wrapperStyle={{ fontSize: '12px' }} />
+                    <Legend />
                     <Bar yAxisId="left" dataKey="Total MOH Cost" name="Total MOH Cost (BDT)" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
                     <Line yAxisId="right" type="monotone" dataKey="Cost/MT" name="Cost / MT" stroke="#f43f5e" strokeWidth={3} dot={{r: 3}} />
                   </ComposedChart>
@@ -836,8 +863,8 @@
                     <Pie data={paramChartData} dataKey="cost" nameKey="name" cx="50%" cy="50%" outerRadius={100}>
                       {paramChartData.map((entry, index) => <Cell key={`cell-${index}`} fill={CHART_COLORS[index % CHART_COLORS.length]} />)}
                     </Pie>
-                    <Tooltip formatter={(value) => `৳${value.toLocaleString(undefined, {maximumFractionDigits: 2})}`} />
-                    <Legend verticalAlign="bottom" height={40} wrapperStyle={{ fontSize: '11px', lineHeight: '14px' }} />
+                    <Tooltip formatter={(value) => `৳${value.toLocaleString()}`} />
+                    <Legend verticalAlign="bottom" height={36} wrapperStyle={{fontSize: '11px'}}/>
                   </PieChart>
                 </ResponsiveContainer>
               </div>
@@ -851,7 +878,7 @@
                     <CartesianGrid strokeDasharray="3 3" horizontal={false} stroke="#e2e8f0"/>
                     <XAxis type="number" tick={{fill: '#64748b', fontSize: 12}} axisLine={false} tickLine={false} />
                     <YAxis dataKey="name" type="category" tick={{fill: '#64748b', fontSize: 11}} axisLine={false} tickLine={false} width={150} />
-                    <Tooltip cursor={{fill: '#f1f5f9'}} formatter={(value) => `৳${value.toLocaleString(undefined, {maximumFractionDigits: 2})}`} />
+                    <Tooltip cursor={{fill: '#f1f5f9'}} formatter={(value) => `৳${value.toLocaleString()}`} />
                     <Bar dataKey="cost" name="MOH Cost (BDT)" fill="#22c55e" radius={[0, 4, 4, 0]} />
                   </BarChart>
                 </ResponsiveContainer>
@@ -867,15 +894,15 @@
               <table className="w-full text-sm text-left text-slate-600">
                 <thead className="text-xs text-slate-500 uppercase bg-slate-50 sticky top-0 z-10">
                   <tr>
-                    <th className="px-6 py-4 whitespace-nowrap">DATE</th>
+                    <th className="px-6 py-4 whitespace-nowrap">Date</th>
                     <th className="px-6 py-4 whitespace-nowrap">SBU</th>
-                    <th className="px-6 py-4 text-right whitespace-nowrap">MT (DEMAND)</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap">MT (Demand)</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[0]}</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[1]}</th>
                     <th className="px-6 py-4 text-right whitespace-nowrap text-blue-700">{headersOPQ[2]}</th>
-                    <th className="px-6 py-4 text-right whitespace-nowrap font-bold text-rose-600">COST / MT</th>
+                    <th className="px-6 py-4 text-right whitespace-nowrap font-bold text-rose-600">Cost / MT</th>
                     {allParamKeys.map(k => (
-                       <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k.toUpperCase()}</th>
+                       <th key={k} className="px-6 py-4 text-right whitespace-nowrap">{k}</th>
                     ))}
                   </tr>
                 </thead>
